@@ -1,0 +1,6 @@
+{
+  "input": {
+    "video_url": "https://REPLACE-with-a-reachable-URL/clip.mp4",
+    "every_n": 200
+  }
+}
