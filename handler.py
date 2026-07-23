@@ -40,7 +40,7 @@ WORKROOT = os.environ.get("INFRASCAN_WORKROOT", "/workspace/runs")
 # 00b_gen_da3 -> 01_propose -> 02_embed -> 02b_match_views -> 03_backproject
 # -> 03b_merge_groups -> 04_index -> gen_topdown -> downsample_ply (through the
 # point cloud). We call that directly rather than re-implementing the stage list.
-PRE_STAGES = ["_00_stitch_insv", "00_video_to_img", "00a_sample_views"]
+PRE_STAGES = ["_00_stitch_insv", "00_video_to_img", "00a_sample_views", "00b_da3_streaming"]
 
 
 def _run(cmd, cwd, env, stage):
@@ -111,6 +111,12 @@ def handler(job):
         _run([py, str(P / "00a_sample_views.py"), "--input_dir", str(frames),
               "--output_dir", str(views)], PLATFORM, env, "00a_sample_views")
         stages_status["00a_sample_views"] = "ok"
+
+        # 3b) DA3 streaming: estimate camera POSES (+depth) from the views -> cameras.json.
+        #     A fresh video has no poses; the runner's 00b_gen_da3 requires cameras.json,
+        #     so this must run first. (Downloads DA3 weights to the volume on first run.)
+        _run([py, str(P / "00b_da3_streaming.py"), "--space", slug],
+             PLATFORM, env, "00b_da3_streaming"); stages_status["00b_da3_streaming"] = "ok"
 
         # 4) the proven entrypoint: runs 00b -> ... -> downsample_ply (through pointcloud)
         _run([py, "-m", "pipeline.runner", "--slug", slug], PLATFORM, env, "pipeline.runner")
