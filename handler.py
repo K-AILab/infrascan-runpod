@@ -88,7 +88,7 @@ def handler(job):
             # spaces.owner_id is a FK to users(id) (TEXT) — need a real user first.
             row = get_conn().execute("SELECT id FROM users LIMIT 1").fetchone()
             owner_id = row[0] if row else create_user(
-                email=f"{slug}@worker.local", name="worker", password="x", role="admin")
+                email=f"{slug}@worker.local", name="worker", password="worker-bootstrap-pw", role="admin")
             space_repo.create_space(slug=slug, title=slug, owner_id=owner_id, status="processing")
         data_dir = Path(space_repo.data_dir(slug))
         (data_dir / "uploads").mkdir(parents=True, exist_ok=True)
