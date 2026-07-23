@@ -47,7 +47,8 @@ RUN mkdir -p /app/infrascan-platform/external/object_proposals/fastsam/weights &
 #     the volume on the first cold start, then every future worker reuses them. ---
 ENV HF_HOME=/runpod-volume/hf TORCH_HOME=/runpod-volume/torch \
     INFRASCAN_PLATFORM_DIR=/app/infrascan-platform \
-    INFRASCAN_WORKROOT=/runpod-volume/runs
+    INFRASCAN_WORKROOT=/runpod-volume/runs \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 COPY handler.py /app/handler.py
 COPY storage.py /app/storage.py
