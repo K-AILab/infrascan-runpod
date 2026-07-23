@@ -27,13 +27,13 @@ RUN mkdir -p /app/infrascan-platform/external/object_proposals/fastsam/weights &
       https://huggingface.co/An-619/FastSAM/resolve/main/FastSAM-x.pt || \
     echo "WARN: FastSAM weight fetch failed"
 
-# --- bake big weights into image (no volume -> avoid re-download on every cold start) ---
+# --- NO weight-baking: keeps the image small enough for the registry to export.
+#     DA3 (GIANT) + DINOv2 download ONCE on the first cold start into these caches.
+#     (Baking them made a multi-GB layer that failed to commit on push.) ---
 ENV HF_HOME=/opt/models/hf TORCH_HOME=/opt/models/torch \
     INFRASCAN_PLATFORM_DIR=/app/infrascan-platform \
     INFRASCAN_WORKROOT=/workspace/runs
 RUN mkdir -p /opt/models/hf /opt/models/torch /workspace/runs
-COPY prefetch_weights.py /app/prefetch_weights.py
-RUN python -u /app/prefetch_weights.py || echo "WARN: prefetch incomplete (downloads at first cold start)"
 
 COPY handler.py /app/handler.py
 COPY storage.py /app/storage.py
