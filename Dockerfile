@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir /app/infrascan-platform[gpu] || \
     pip install --no-cache-dir -e /app/infrascan-platform
 RUN pip install --no-cache-dir \
         depth-anything-3 ultralytics \
-        "open3d>=0.18" faiss-gpu-cu12 numba pypose einops safetensors \
+        "open3d>=0.18" faiss-cpu numba pypose einops safetensors \
         pandas prettytable \
         git+https://github.com/openai/CLIP.git \
         boto3 runpod
