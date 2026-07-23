@@ -1,0 +1,17 @@
+# Sample cloudflared config for the platform.
+# Copy to ~/.cloudflared/infrascan-platform.yml and fill in your tunnel UUID + creds.
+#
+# Run: cloudflared --config ~/.cloudflared/infrascan-platform.yml tunnel run
+
+tunnel: REPLACE_WITH_TUNNEL_UUID
+credentials-file: /home/USER/.cloudflared/REPLACE_WITH_TUNNEL_UUID.json
+
+ingress:
+  - hostname: app.infrascan-ai.com
+    service: http://localhost:8050
+
+  - hostname: admin.infrascan-ai.com
+    service: http://localhost:8051
+
+  # default — everything else returns 404
+  - service: http_status:404

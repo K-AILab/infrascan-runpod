@@ -1,0 +1,43 @@
+{% extends "_base.html" %}
+{% block title %}Sign in · InfraScan{% endblock %}
+{% block header %}{% endblock %}
+{% block body_attrs %} style="display: grid; place-items: center; min-height: 100vh;"{% endblock %}
+{% block content %}
+<form class="auth-card" method="post" action="/login" style="
+    width: 100%; max-width: 380px;
+    padding: var(--space-6);
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);">
+
+  <input type="hidden" name="next" value="{{ next or '/' }}">
+
+  <div style="text-align: center; margin-bottom: var(--space-6);">
+    <a class="brand-mark" href="/" style="font-size: var(--fs-7);">Infra<span class="accent">Scan</span></a>
+    <p style="color: var(--text-muted); font-size: var(--fs-3); margin: var(--space-2) 0 0;">Sign in to manage your spaces.</p>
+  </div>
+
+  {% if error %}
+  <div style="padding: var(--space-3); border: 1px solid var(--danger); background: rgba(181, 80, 58, 0.08); color: var(--danger); border-radius: var(--radius-md); font-size: var(--fs-3); margin-bottom: var(--space-4);">
+    {{ error }}
+  </div>
+  {% endif %}
+
+  <div class="stack">
+    <div class="field">
+      <label class="field-label" for="email">Email</label>
+      <input class="input" id="email" name="email" type="email" placeholder="you@company.com" autocomplete="email" required autofocus>
+    </div>
+    <div class="field">
+      <label class="field-label" for="password">Password</label>
+      <input class="input" id="password" name="password" type="password" placeholder="••••••••" autocomplete="current-password" required>
+    </div>
+    <button class="btn btn-primary" type="submit" style="width: 100%;">Continue</button>
+  </div>
+
+  <p style="text-align: center; font-size: var(--fs-2); color: var(--text-muted); margin-top: var(--space-5);">
+    Need access? Ask an admin to invite you.
+  </p>
+</form>
+{% endblock %}

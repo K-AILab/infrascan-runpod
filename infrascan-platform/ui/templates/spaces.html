@@ -1,0 +1,83 @@
+{% extends "_base.html" %}
+{% set active = "spaces" %}
+{% block title %}My spaces · InfraScan{% endblock %}
+{% block head %}
+<style>
+  .progress-strip { height: 3px; width: 100%; background: var(--bg-subtle); position: absolute; left: 0; bottom: 0; }
+  .progress-strip > div { height: 100%; background: var(--brand); transition: width var(--t-slow); }
+  .card-media { position: relative; aspect-ratio: 16/10; background: var(--bg-subtle) center/cover no-repeat; }
+  .card-media img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .stage-tag { position: absolute; top: var(--space-3); left: var(--space-3); padding: 3px 8px; font-family: var(--font-mono); font-size: var(--fs-1); background: color-mix(in srgb, var(--bg-elev) 90%, transparent); backdrop-filter: blur(8px); color: var(--text-muted); border-radius: var(--radius-pill); }
+  .grid-thumb-1 { background: linear-gradient(135deg, #e8c7b5, #b89478); }
+  .grid-thumb-2 { background: linear-gradient(135deg, #d4c5a9, #94835f); }
+  .grid-thumb-3 { background: linear-gradient(135deg, #c5d4b1, #7e9461); }
+  .grid-thumb-4 { background: linear-gradient(135deg, #cdb89e, #846445); }
+</style>
+{% endblock %}
+
+{% block content %}
+<main class="container" style="padding-top: var(--space-7); padding-bottom: var(--space-9);">
+  <div style="display:flex; align-items:baseline; gap:var(--space-3); margin-bottom:var(--space-2);">
+    <h1 style="margin: 0;">My spaces</h1>
+    <span class="muted">{{ spaces|length }} space{{ '' if spaces|length == 1 else 's' }}</span>
+  </div>
+  <p class="muted" style="margin-bottom: var(--space-6);">Welcome back, {{ user.name }}.</p>
+
+  <div class="grid">
+    {% for s in spaces %}
+    <a class="card" href="/spaces/{{ s.slug }}">
+      <div class="card-media {% if not s.thumbnail_url %}grid-thumb-{{ loop.index0 % 4 + 1 }}{% endif %}">
+        {% if s.thumbnail_url %}<img src="{{ s.thumbnail_url }}" alt="{{ s.title }} thumbnail">{% endif %}
+        {% if s.status == 'processing' %}<span class="stage-tag">processing</span>
+        {% elif s.status == 'preflight' %}<span class="stage-tag">checking</span>
+        {% elif s.status == 'preflight_done' %}<span class="stage-tag">awaiting your ok</span>
+        {% elif s.status == 'failed' %}<span class="stage-tag" style="background: rgba(181,80,58,0.18); color: var(--danger);">failed</span>
+        {% endif %}
+      </div>
+      <div class="card-body">
+        {% if s.status == 'ready' %}
+          <span class="badge success">ready</span>
+        {% elif s.status == 'processing' %}
+          <span class="badge warn">processing</span>
+        {% elif s.status == 'preflight' %}
+          <span class="badge warn">checking your upload</span>
+        {% elif s.status == 'preflight_done' %}
+          <span class="badge">needs your ok</span>
+        {% elif s.status == 'uploading' %}
+          <span class="badge neutral">uploading</span>
+        {% elif s.status == 'failed' %}
+          <span class="badge" style="background: rgba(181,80,58,0.12); color: var(--danger); border-color: rgba(181,80,58,0.32);">failed</span>
+        {% endif %}
+        <h3 class="card-title">{{ s.title }}</h3>
+        <div class="card-meta">
+          {% if s.n_scanpoints %}<span>{{ "{:,}".format(s.n_scanpoints) }} scanpoints</span>{% endif %}
+          {% if s.n_views %}<span>{{ "{:,}".format(s.n_views) }} views</span>{% endif %}
+        </div>
+        <div class="card-actions">
+          {% if s.status == 'ready' %}
+            <span class="btn btn-secondary btn-sm">Walk through</span>
+            <span class="btn btn-ghost btn-sm">Search →</span>
+          {% elif s.status in ('preflight', 'preflight_done') %}
+            <span class="btn btn-primary btn-sm">See preflight →</span>
+          {% else %}
+            <span class="btn btn-secondary btn-sm">Open</span>
+          {% endif %}
+        </div>
+      </div>
+    </a>
+    {% endfor %}
+
+    <a class="card" href="/upload">
+      <div class="card-media" style="display:grid; place-items:center; background: var(--bg-subtle); color: var(--text-soft); font-size: 36px; aspect-ratio: 16/10;">+</div>
+      <div class="card-body">
+        <span class="badge">new</span>
+        <h3 class="card-title">Upload a scan</h3>
+        <p class="card-desc">Drop your 360° walkthrough. We do the rest.</p>
+        <div class="card-actions">
+          <span class="btn btn-primary btn-sm">Start</span>
+        </div>
+      </div>
+    </a>
+  </div>
+</main>
+{% endblock %}

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}InfraScan{% endblock %}</title>
+<link rel="stylesheet" href="/shared/tokens.css">
+<link rel="stylesheet" href="/shared/base.css">
+<link rel="stylesheet" href="/shared/components.css">
+{% block head %}{% endblock %}
+</head>
+<body{% block body_attrs %}{% endblock %}>
+
+{% block header %}
+<header class="app-header">
+  <div class="app-header-inner">
+    <a class="brand-mark" href="/">Infra<span class="accent">Scan</span></a>
+    {% if user %}
+    <nav class="app-nav">
+      <a href="/spaces" {% if active == 'spaces' %}class="active"{% endif %}>Spaces</a>
+      <a href="/search" {% if active == 'search' %}class="active"{% endif %}>Search</a>
+      <a href="/upload" {% if active == 'upload' %}class="active"{% endif %}>Upload</a>
+      {# Admin subdomain is queued for Phase 3; link returns once admin.infrascan-ai.com has an ingress. #}
+      <button class="theme-toggle" id="themeBtn" aria-label="Toggle theme" type="button">◐</button>
+      <form action="/logout" method="post" style="margin:0;">
+        <button class="btn btn-ghost btn-sm" type="submit">Sign out</button>
+      </form>
+    </nav>
+    {% else %}
+    <nav class="app-nav">
+      <button class="theme-toggle" id="themeBtn" aria-label="Toggle theme" type="button">◐</button>
+    </nav>
+    {% endif %}
+  </div>
+</header>
+{% endblock %}
+
+{% block content %}{% endblock %}
+
+<script>
+  // Theme toggle, shared across every page.
+  (function(){
+    const btn = document.getElementById("themeBtn");
+    const root = document.documentElement;
+    const saved = localStorage.getItem("infrascan_theme");
+    if (saved) root.setAttribute("data-theme", saved);
+    if (!btn) return;
+    btn.addEventListener("click", function(){
+      const cur = root.getAttribute("data-theme") ||
+        (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      const next = cur === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      localStorage.setItem("infrascan_theme", next);
+    });
+  })();
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,19 @@
+{% extends "_base.html" %}
+{% block title %}Logs · InfraScan Admin{% endblock %}
+{% block header %}
+<header class="app-header"><div class="app-header-inner">
+  <a class="brand-mark" href="/">Infra<span class="accent">Scan</span> <span class="caption" style="margin-left: 6px;">admin</span></a>
+  <nav class="app-nav">
+    <a href="/gallery">Gallery</a><a href="/users">Users</a><a href="/spaces">Spaces</a><a href="/logs" class="active">Logs</a>
+    <button class="theme-toggle" id="themeBtn" type="button">◐</button>
+    <form action="/logout" method="post" style="margin:0;"><button class="btn btn-ghost btn-sm" type="submit">Sign out</button></form>
+  </nav>
+</div></header>
+{% endblock %}
+{% block content %}
+<main class="container" style="padding-top: var(--space-7); padding-bottom: var(--space-9);">
+  <h1>Logs</h1>
+  <pre style="background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-4); overflow-x: auto; font-family: var(--font-mono); font-size: var(--fs-2);">{% for line in log_lines %}{{ line }}
+{% endfor %}</pre>
+</main>
+{% endblock %}

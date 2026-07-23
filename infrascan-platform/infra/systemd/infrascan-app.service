@@ -1,0 +1,16 @@
+[Unit]
+Description=InfraScan user-facing app (uvicorn :8050)
+After=network.target
+
+[Service]
+Type=simple
+User=infrascan
+WorkingDirectory=/opt/infrascan-platform
+EnvironmentFile=/opt/infrascan-platform/.env
+ExecStart=/opt/infrascan-platform/.venv/bin/uvicorn app.main:app \
+    --host 0.0.0.0 --port 8050 --workers 2
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

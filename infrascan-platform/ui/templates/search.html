@@ -1,0 +1,71 @@
+{% extends "_base.html" %}
+{% set active = "search" %}
+{% block title %}Search · InfraScan{% endblock %}
+{% block head %}
+<style>
+  .layout { display: grid; grid-template-columns: 240px 1fr; gap: var(--space-7); max-width: var(--max-content); margin: 0 auto; padding: var(--space-6) var(--space-5) var(--space-9); }
+  .filters h4 { display: flex; align-items: center; font-family: var(--font-sans); font-size: var(--fs-1); font-weight: 600; color: var(--text-soft); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 var(--space-3); }
+  .filters h4 + h4 { margin-top: var(--space-5); }
+  .filter-list { display: flex; flex-direction: column; gap: 4px; }
+  .filter-row { display: grid; grid-template-columns: 1fr auto; align-items: center; padding: 6px 10px; border-radius: var(--radius-sm); cursor: pointer; font-size: var(--fs-3); color: var(--text); }
+  .filter-row:hover { background: var(--bg-subtle); }
+  .filter-row .count { font-family: var(--font-mono); font-size: var(--fs-1); color: var(--text-muted); }
+  .filter-row.on { background: var(--brand-soft); }
+  .search-shell { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-3) var(--space-4); display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: var(--space-3); margin-bottom: var(--space-4); box-shadow: var(--shadow-sm); }
+  .prompt-thumb { width: 56px; height: 56px; border-radius: var(--radius-sm); background: var(--bg-subtle); }
+  .prompt-title { font-family: var(--font-serif); font-size: var(--fs-5); font-weight: 600; }
+  .empty-row { font-size: var(--fs-2); padding: var(--space-3); border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); line-height: var(--lh-snug); margin-top: 4px; }
+  .hits { display: flex; flex-direction: column; gap: var(--space-3); }
+  .hit { display: grid; grid-template-columns: 140px 1fr auto; gap: var(--space-4); background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; text-decoration: none; color: inherit; }
+  .hit:hover { border-color: var(--border-strong); background: color-mix(in srgb, var(--bg-subtle) 80%, var(--bg-elev)); }
+  .hit-thumb { aspect-ratio: 1/1; background: var(--bg-subtle); }
+  .hit-body { padding: var(--space-4) 0; display: flex; flex-direction: column; gap: var(--space-2); }
+  .hit-title { font-family: var(--font-serif); font-size: var(--fs-5); font-weight: 600; margin: 0; }
+  .hit-score { padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: var(--space-1); border-left: 1px solid var(--border); min-width: 100px; }
+  .hit-score .n { font-family: var(--font-serif); font-size: var(--fs-6); color: var(--brand); font-weight: 600; }
+  .hit-score .l { font-size: var(--fs-1); color: var(--text-soft); text-transform: uppercase; letter-spacing: 0.06em; }
+  .empty-state { text-align: center; padding: var(--space-8) var(--space-5); border: 1px dashed var(--border-strong); border-radius: var(--radius-lg); color: var(--text-muted); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="layout">
+  <aside class="filters">
+    <h4>Scope</h4>
+    <div class="filter-list" id="scopeList">
+      <div class="filter-row on" data-space="">All my spaces <span class="count">{{ spaces|length }}</span></div>
+      {% for s in spaces %}
+      <div class="filter-row" data-space="{{ s.slug }}">{{ s.title }} <span class="count">{{ s.n_scanpoints }} sp</span></div>
+      {% endfor %}
+    </div>
+
+    <h4>Saved names <a class="btn btn-ghost btn-sm" href="/spaces" style="margin-left: auto; padding: 2px 8px; font-size: var(--fs-1);">+ new</a></h4>
+    <div class="filter-list" id="namesList">
+      <div class="empty-row muted">Click an object in any space → "name this" to add one.</div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="search-shell">
+      <div class="prompt-thumb"></div>
+      <div>
+        <div class="prompt-title">Search</div>
+        <div class="caption">Click an object inside a viewer, or open a saved name from the left.</div>
+      </div>
+      <div></div>
+      <a class="btn btn-primary btn-sm" href="/spaces">Open a space →</a>
+    </div>
+
+    <div id="hitsContainer">
+      <div class="empty-state">
+        <h3 class="serif" style="margin: 0 0 var(--space-2);">No active search yet</h3>
+        <p style="margin: 0;">Walk into a space and click an object to start searching.</p>
+      </div>
+    </div>
+  </main>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/search.js" defer></script>
+{% endblock %}

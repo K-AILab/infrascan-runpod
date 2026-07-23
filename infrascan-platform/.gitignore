@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+.env.local
+
+# Data / artifacts — none of this is checked in
+data/
+out/
+external/
+node_modules/
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Logs
+*.log
+logs/
+
+# Build
+dist/
+build/
+*.whl
+
+# DA3 model weights — too big for GitHub (100MB limit).
+# Download separately; see pipeline/da3_streaming/README.md
+pipeline/da3_streaming/weights/
+
+# Session detritus
+data.sqlite3
+map_error.png
+ui/_spaces/

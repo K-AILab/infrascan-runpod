@@ -1,0 +1,53 @@
+/* ============================================================
+   Base reset + typography
+   Depends on tokens.css.
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--fs-4);
+  line-height: var(--lh-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+img, video, canvas { max-width: 100%; height: auto; }
+
+a { color: var(--brand); text-decoration: none; }
+a:hover { color: var(--brand-hover); text-decoration: underline; }
+
+h1, h2, h3, h4 {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: var(--lh-tight);
+  color: var(--text);
+  margin: 0 0 var(--space-3);
+}
+
+h1 { font-size: var(--fs-9); letter-spacing: -0.025em; }
+h2 { font-size: var(--fs-8); letter-spacing: -0.02em; }
+h3 { font-size: var(--fs-7); }
+h4 { font-size: var(--fs-6); }
+
+p { margin: 0 0 var(--space-4); color: var(--text); }
+small, .caption { font-size: var(--fs-2); color: var(--text-muted); }
+
+code, pre, .mono { font-family: var(--font-mono); font-size: 0.92em; }
+code { background: var(--bg-subtle); padding: 1px 6px; border-radius: 4px; }
+
+::selection { background: var(--brand-soft); color: var(--text); }
+
+.container { max-width: var(--max-content); margin: 0 auto; padding: 0 var(--space-5); }
+.stack > * + * { margin-top: var(--space-4); }
+.muted   { color: var(--text-muted); }
+.soft    { color: var(--text-soft); }
+.serif   { font-family: var(--font-serif); }
+.brand   { color: var(--brand); }

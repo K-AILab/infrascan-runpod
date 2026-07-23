@@ -1,0 +1,126 @@
+/* ============================================================
+   InfraScan design tokens
+   Anthropic-inspired warm tone + Matterport-inspired content-forward layout.
+   Single source of truth for color, typography, spacing.
+   ============================================================ */
+
+:root {
+  /* -- Surfaces (light, default) -------------------------------- */
+  --bg:           #f4f1ea;   /* warm cream — Anthropic claude.ai canvas */
+  --bg-elev:      #ffffff;   /* cards, panels */
+  --bg-subtle:    #ece7dc;   /* hover, hairlines */
+  --bg-inset:     #e2ddd1;   /* depressed surfaces */
+
+  /* -- Text ----------------------------------------------------- */
+  --text:         #2d2924;   /* near-black, warm */
+  --text-muted:   #6b655e;   /* secondary text */
+  --text-soft:    #8a847b;   /* tertiary, captions */
+  --text-on-brand:#ffffff;
+
+  /* -- Brand (Claude warm orange) ------------------------------- */
+  --brand:        #cc785c;
+  --brand-hover:  #b3624a;
+  --brand-active: #9a5240;
+  --brand-soft:   rgba(204, 120, 92, 0.10);
+  --brand-ring:   rgba(204, 120, 92, 0.32);
+
+  /* -- Semantic states ----------------------------------------- */
+  --info:         #5b8fb9;
+  --success:      #6b9e7e;
+  --warn:         #c98a3a;
+  --danger:       #b5503a;
+
+  /* -- Borders + shadows --------------------------------------- */
+  --border:       rgba(45, 41, 36, 0.10);
+  --border-strong:rgba(45, 41, 36, 0.18);
+  --shadow-sm:    0 1px 2px rgba(45, 41, 36, 0.04),
+                  0 1px 1px rgba(45, 41, 36, 0.06);
+  --shadow-md:    0 4px 12px rgba(45, 41, 36, 0.08),
+                  0 2px 4px rgba(45, 41, 36, 0.04);
+  --shadow-lg:    0 12px 32px rgba(45, 41, 36, 0.10),
+                  0 4px 8px rgba(45, 41, 36, 0.05);
+
+  /* -- Typography ---------------------------------------------- */
+  --font-serif:   'Source Serif Pro', 'Source Serif 4', 'Tiempos',
+                  'PT Serif', Georgia, 'Times New Roman', serif;
+  --font-sans:    'Inter', system-ui, -apple-system, BlinkMacSystemFont,
+                  'Segoe UI', sans-serif;
+  --font-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo,
+                  Consolas, monospace;
+
+  --fs-1: 12px;  --fs-2: 13px;  --fs-3: 14px;
+  --fs-4: 15px;  --fs-5: 17px;  --fs-6: 20px;
+  --fs-7: 24px;  --fs-8: 32px;  --fs-9: 44px;
+
+  --lh-tight: 1.20;
+  --lh-snug:  1.40;
+  --lh-body:  1.55;
+
+  /* -- Spacing (4px scale) ------------------------------------- */
+  --space-1: 4px;   --space-2: 8px;   --space-3: 12px;
+  --space-4: 16px;  --space-5: 24px;  --space-6: 32px;
+  --space-7: 48px;  --space-8: 64px;  --space-9: 96px;
+
+  /* -- Radius -------------------------------------------------- */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  /* -- Layout -------------------------------------------------- */
+  --max-content: 1080px;
+  --header-h:    64px;
+
+  /* -- Motion -------------------------------------------------- */
+  --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);
+  --t-fast:     120ms;
+  --t-base:     180ms;
+  --t-slow:     280ms;
+}
+
+/* -- Dark mode (Anthropic claude.ai dark palette) ---------------- */
+[data-theme="dark"] {
+  --bg:           #1f1c18;
+  --bg-elev:      #2a2620;
+  --bg-subtle:    #25211c;
+  --bg-inset:     #181613;
+
+  --text:         #e8e3da;
+  --text-muted:   #a39d92;
+  --text-soft:    #756e64;
+
+  --brand:        #e08768;
+  --brand-hover:  #ee9b7c;
+  --brand-active: #cc785c;
+  --brand-soft:   rgba(224, 135, 104, 0.14);
+  --brand-ring:   rgba(224, 135, 104, 0.40);
+
+  --border:       rgba(232, 227, 218, 0.10);
+  --border-strong:rgba(232, 227, 218, 0.18);
+  --shadow-sm:    0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-md:    0 4px 12px rgba(0, 0, 0, 0.40);
+  --shadow-lg:    0 12px 32px rgba(0, 0, 0, 0.50);
+}
+
+/* Auto-pick theme if user has no explicit choice. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:           #1f1c18;
+    --bg-elev:      #2a2620;
+    --bg-subtle:    #25211c;
+    --bg-inset:     #181613;
+    --text:         #e8e3da;
+    --text-muted:   #a39d92;
+    --text-soft:    #756e64;
+    --brand:        #e08768;
+    --brand-hover:  #ee9b7c;
+    --brand-active: #cc785c;
+    --brand-soft:   rgba(224, 135, 104, 0.14);
+    --brand-ring:   rgba(224, 135, 104, 0.40);
+    --border:       rgba(232, 227, 218, 0.10);
+    --border-strong:rgba(232, 227, 218, 0.18);
+    --shadow-sm:    0 1px 2px rgba(0, 0, 0, 0.30);
+    --shadow-md:    0 4px 12px rgba(0, 0, 0, 0.40);
+    --shadow-lg:    0 12px 32px rgba(0, 0, 0, 0.50);
+  }
+}

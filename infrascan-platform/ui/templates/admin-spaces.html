@@ -1,0 +1,50 @@
+{% extends "_base.html" %}
+{% block title %}All spaces · InfraScan Admin{% endblock %}
+{% block header %}
+<header class="app-header"><div class="app-header-inner">
+  <a class="brand-mark" href="/">Infra<span class="accent">Scan</span> <span class="caption" style="margin-left: 6px;">admin</span></a>
+  <nav class="app-nav">
+    <a href="/gallery">Gallery</a><a href="/users">Users</a><a href="/spaces" class="active">Spaces</a><a href="/logs">Logs</a>
+    <button class="theme-toggle" id="themeBtn" type="button">◐</button>
+    <form action="/logout" method="post" style="margin:0;"><button class="btn btn-ghost btn-sm" type="submit">Sign out</button></form>
+  </nav>
+</div></header>
+{% endblock %}
+{% block head %}
+<style>
+  table { width:100%; border-collapse: collapse; font-size: var(--fs-3); }
+  th, td { text-align: left; padding: var(--space-3); border-bottom: 1px solid var(--border); }
+  th { font-weight: 500; font-size: var(--fs-2); color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+</style>
+{% endblock %}
+{% block content %}
+<main class="container" style="padding-top: var(--space-7); padding-bottom: var(--space-9);">
+  <h1>All spaces</h1>
+  <div class="card" style="padding: 0; margin-top: var(--space-6);">
+    <table>
+      <thead><tr><th>slug</th><th>title</th><th>owner</th><th>status</th><th>scanpoints</th><th>updated</th><th></th></tr></thead>
+      <tbody>
+        {% for s in spaces %}
+        <tr>
+          <td><code>{{ s.slug }}</code></td>
+          <td>{{ s.title }}</td>
+          <td>{{ s.owner_name }} <span class="muted">({{ s.owner_email }})</span></td>
+          <td><span class="badge {{ 'success' if s.status == 'ready' else 'warn' }}">{{ s.status }}</span></td>
+          <td>{{ s.n_scanpoints }}</td>
+          <td class="muted">{{ s.updated_at }}</td>
+          <td>
+            <details>
+              <summary class="btn btn-ghost btn-sm" style="list-style: none;">Reassign</summary>
+              <form method="post" action="/spaces/{{ s.slug }}/reassign" style="display: inline-flex; gap: var(--space-2); margin-top: var(--space-2);">
+                <input class="input" type="email" name="new_owner_email" placeholder="new-owner@…" required>
+                <button class="btn btn-primary btn-sm" type="submit">Save</button>
+              </form>
+            </details>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</main>
+{% endblock %}
