@@ -30,6 +30,12 @@ RUN pip install --no-cache-dir --force-reinstall \
         torch==2.4.0 torchvision==0.19.0 \
         --index-url https://download.pytorch.org/whl/cu124
 
+# xformers is locked to an EXACT torch build. depth-anything-3's dinov2 imports
+# `from xformers.ops import SwiGLU`; the xformers pulled above targets a newer
+# torch API (torch.backends.cuda.is_flash_attention_available) absent in 2.4.0.
+# Pin the xformers release built against torch 2.4.0.
+RUN pip install --no-cache-dir --force-reinstall --no-deps xformers==0.0.27.post2
+
 # --- FastSAM weights (small) ---
 RUN mkdir -p /app/infrascan-platform/external/object_proposals/fastsam/weights && \
     curl -fsSL -o /app/infrascan-platform/external/object_proposals/fastsam/weights/FastSAM-x.pt \
