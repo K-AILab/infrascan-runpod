@@ -22,6 +22,14 @@ RUN pip install --no-cache-dir \
         git+https://github.com/cvg/LightGlue.git \
         boto3 runpod
 
+# Some deps above replace torchvision with a wheel that does NOT match the base
+# image's torch 2.4.0, which de-registers torchvision's C++ ops and makes any
+# `import torchvision` fail with "operator torchvision::nms does not exist".
+# Reinstall the matched CUDA-12.4 pair as the LAST step so the ops register.
+RUN pip install --no-cache-dir --force-reinstall \
+        torch==2.4.0 torchvision==0.19.0 \
+        --index-url https://download.pytorch.org/whl/cu124
+
 # --- FastSAM weights (small) ---
 RUN mkdir -p /app/infrascan-platform/external/object_proposals/fastsam/weights && \
     curl -fsSL -o /app/infrascan-platform/external/object_proposals/fastsam/weights/FastSAM-x.pt \
