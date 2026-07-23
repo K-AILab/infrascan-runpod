@@ -27,13 +27,12 @@ RUN mkdir -p /app/infrascan-platform/external/object_proposals/fastsam/weights &
       https://huggingface.co/An-619/FastSAM/resolve/main/FastSAM-x.pt || \
     echo "WARN: FastSAM weight fetch failed"
 
-# --- NO weight-baking: keeps the image small enough for the registry to export.
-#     DA3 (GIANT) + DINOv2 download ONCE on the first cold start into these caches.
-#     (Baking them made a multi-GB layer that failed to commit on push.) ---
-ENV HF_HOME=/opt/models/hf TORCH_HOME=/opt/models/torch \
+# --- Weights cache + work dir live on the mounted NETWORK VOLUME (/runpod-volume).
+#     Image stays small (no baked weights); DA3 (GIANT) + DINOv2 download ONCE onto
+#     the volume on the first cold start, then every future worker reuses them. ---
+ENV HF_HOME=/runpod-volume/hf TORCH_HOME=/runpod-volume/torch \
     INFRASCAN_PLATFORM_DIR=/app/infrascan-platform \
-    INFRASCAN_WORKROOT=/workspace/runs
-RUN mkdir -p /opt/models/hf /opt/models/torch /workspace/runs
+    INFRASCAN_WORKROOT=/runpod-volume/runs
 
 COPY handler.py /app/handler.py
 COPY storage.py /app/storage.py
