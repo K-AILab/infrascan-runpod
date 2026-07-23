@@ -81,11 +81,15 @@ def handler(job):
             os.environ[k] = env[k]
         from app import config as cfg
         from app import spaces as space_repo
-        from app.db import init as db_init
+        from app.db import init as db_init, get_conn
+        from app.auth import create_user
         cfg.ensure_dirs(); db_init()
         if not space_repo.by_slug(slug):
-            # owner_id: use a system/bootstrap user id; adjust if the schema requires a real user.
-            space_repo.create_space(slug=slug, title=slug, owner_id=1, status="processing")
+            # spaces.owner_id is a FK to users(id) (TEXT) — need a real user first.
+            row = get_conn().execute("SELECT id FROM users LIMIT 1").fetchone()
+            owner_id = row[0] if row else create_user(
+                email=f"{slug}@worker.local", name="worker", password="x", role="admin")
+            space_repo.create_space(slug=slug, title=slug, owner_id=owner_id, status="processing")
         data_dir = Path(space_repo.data_dir(slug))
         (data_dir / "uploads").mkdir(parents=True, exist_ok=True)
 
