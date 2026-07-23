@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir \
         "open3d>=0.18" faiss-cpu numba pypose einops safetensors \
         pandas prettytable \
         git+https://github.com/openai/CLIP.git \
+        git+https://github.com/cvg/LightGlue.git \
         boto3 runpod
 
 # --- FastSAM weights (small) ---

@@ -37,7 +37,13 @@ def run_stage(stage: str, slug: str) -> tuple[int, str]:
     script = Path(__file__).parent / f"{stage}.py"
     if not script.exists():
         return 127, f"missing script: {script}"
-    cmd = [sys.executable, str(script), "--space", slug]
+    # downsample_ply.py takes the space name as a POSITIONAL arg (it also accepts
+    # a raw PLY path), unlike every other stage which uses --space. Passing
+    # --space to it makes argparse abort with rc=2, so special-case it.
+    if stage == "downsample_ply":
+        cmd = [sys.executable, str(script), slug]
+    else:
+        cmd = [sys.executable, str(script), "--space", slug]
     res = subprocess.run(cmd, capture_output=True, text=True)
     return res.returncode, (res.stderr or "")[-2000:]
 

@@ -276,7 +276,7 @@ class DA3_Streaming:
 
         chunk_start, chunk_end = self.chunk_indices[chunk_idx]
 
-        if chunk_idx == 0:
+        if chunk_idx == 0 and len(self.chunk_indices) > 1:
             save_indices = list(range(0, chunk_end - chunk_start - self.overlap_e))
         elif chunk_idx == len(self.chunk_indices) - 1:
             save_indices = list(range(self.overlap_s, chunk_end - chunk_start))
@@ -764,6 +764,38 @@ class DA3_Streaming:
                 predictions.depth *= s
                 self.save_depth_conf_result(predictions, chunk_idx + 1, s, R, t)
 
+        # Single-chunk captures (<= chunk_size views) never enter the alignment
+        # loop above (range(0)), so the sole chunk's depth NPZs + point cloud —
+        # normally emitted by the chunk_idx==0 block — would be missing, and the
+        # downstream wrapper aborts with "no per-frame .npz produced". Emit them
+        # here for the lone chunk (identity sim3, already in the first frame).
+        if len(self.chunk_indices) == 1:
+            chunk_data_first = np.load(
+                os.path.join(self.result_unaligned_dir, "chunk_0.npy"),
+                allow_pickle=True,
+            ).item()
+            np.save(
+                os.path.join(self.result_aligned_dir, "chunk_0.npy"), chunk_data_first
+            )
+            points_first = depth_to_point_cloud_vectorized(
+                chunk_data_first.depth,
+                chunk_data_first.intrinsics,
+                chunk_data_first.extrinsics,
+            )
+            save_confident_pointcloud_batch(
+                points=points_first,
+                colors=chunk_data_first.processed_images,
+                confs=chunk_data_first.conf,
+                output_path=os.path.join(self.pcd_dir, "0_pcd.ply"),
+                conf_threshold=np.mean(chunk_data_first.conf)
+                * self.config["Model"]["Pointcloud_Save"]["conf_threshold_coef"],
+                sample_ratio=self.config["Model"]["Pointcloud_Save"]["sample_ratio"],
+            )
+            if self.config["Model"]["save_depth_conf_result"]:
+                self.save_depth_conf_result(
+                    chunk_data_first, 0, 1, np.eye(3), np.array([0, 0, 0])
+                )
+
         self.save_camera_poses()
 
         print("Done.")
@@ -835,8 +867,17 @@ class DA3_Streaming:
         first_chunk_range, first_chunk_extrinsics = self.all_camera_poses[0]
         _, first_chunk_intrinsics = self.all_camera_intrinsics[0]
 
+        # When there is only a single chunk it is also the last chunk, so the
+        # tail must NOT be trimmed by overlap_e (which assumes a following chunk
+        # will cover it). Trimming here left frames overlap_e..end unposed
+        # (None) for small captures (<= chunk_size views) -> crash in flatten().
+        first_chunk_end = (
+            first_chunk_range[1] - self.overlap_e
+            if len(self.all_camera_poses) > 1
+            else first_chunk_range[1]
+        )
         for i, idx in enumerate(
-            range(first_chunk_range[0], first_chunk_range[1] - self.overlap_e)
+            range(first_chunk_range[0], first_chunk_end)
         ):
             w2c = np.eye(4)
             w2c[:3, :] = first_chunk_extrinsics[i]

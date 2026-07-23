@@ -54,6 +54,44 @@ def _run(cmd, cwd, env, stage):
     return tail
 
 
+# da3_streaming loads three weight files by RELATIVE path (./weights/...) with
+# cwd=da3_streaming/. They are ~6.6 GB total and gitignored, so they are NOT in
+# the image. Cache them on the persistent network volume and symlink them in, so
+# the giant DA3 checkpoint downloads only ONCE across all cold starts.
+DA3_WEIGHTS = {
+    "config.json":
+        "https://huggingface.co/depth-anything/DA3NESTED-GIANT-LARGE-1.1/resolve/main/config.json",
+    "model.safetensors":
+        "https://huggingface.co/depth-anything/DA3NESTED-GIANT-LARGE-1.1/resolve/main/model.safetensors",
+    "dino_salad.ckpt":
+        "https://github.com/serizba/salad/releases/download/v1.0.0/dino_salad.ckpt",
+}
+
+
+def _ensure_da3_weights():
+    da3_dir = Path(PLATFORM) / "pipeline" / "da3_streaming"
+    wdir = da3_dir / "weights"
+    cache = Path(os.environ.get("DA3_WEIGHTS_DIR",
+                                str(Path(WORKROOT).parent / "da3_weights")))
+    cache.mkdir(parents=True, exist_ok=True)
+    for name, url in DA3_WEIGHTS.items():
+        dst = cache / name
+        if dst.exists() and dst.stat().st_size > 0:
+            continue
+        print(f"[weights] downloading {name} (first cold start only) ...", flush=True)
+        tmp = dst.with_suffix(dst.suffix + ".part")
+        urllib.request.urlretrieve(url, str(tmp))
+        tmp.replace(dst)
+        print(f"[weights] {name} -> {dst} ({dst.stat().st_size/1e6:.1f} MB)", flush=True)
+    wdir.mkdir(parents=True, exist_ok=True)
+    for name in DA3_WEIGHTS:
+        link = wdir / name
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(cache / name)
+    print(f"[weights] linked {list(DA3_WEIGHTS)} into {wdir}", flush=True)
+
+
 def handler(job):
     inp = job.get("input", {}) or {}
     video_url = inp.get("video_url")
@@ -114,7 +152,9 @@ def handler(job):
 
         # 3b) DA3 streaming: estimate camera POSES (+depth) from the views -> cameras.json.
         #     A fresh video has no poses; the runner's 00b_gen_da3 requires cameras.json,
-        #     so this must run first. (Downloads DA3 weights to the volume on first run.)
+        #     so this must run first. Ensure the ~6.6GB DA3+SALAD weights are on the
+        #     volume + linked in before running it.
+        _ensure_da3_weights()
         _run([py, str(P / "00b_da3_streaming.py"), "--space", slug],
              PLATFORM, env, "00b_da3_streaming"); stages_status["00b_da3_streaming"] = "ok"
 
@@ -122,11 +162,25 @@ def handler(job):
         _run([py, "-m", "pipeline.runner", "--slug", slug], PLATFORM, env, "pipeline.runner")
         stages_status["pipeline.runner"] = "ok"
 
-        # 5) collect outputs, zip, upload
+        # 5) collect outputs from all three roots into ONE bundle, zip, upload:
+        #    data/<slug>  -> pointcloud.ply, cameras.json, intrinsics.json, depth/, views/
+        #    out/<slug>   -> index.faiss, embeddings.npy, object_ids.npy, metadata.json, proposals.jsonl
+        #    ui/_spaces/<slug> -> topdown/topdown.png + Data_/downsampled_web.ply
         n_views = len(glob.glob(str(views / "*.jpg")))
+        out_dir = Path(env["INFRASCAN_OUT_ROOT"]) / slug
+        ui_dir = Path(PLATFORM) / "ui" / "_spaces" / slug
         pcds = glob.glob(str(data_dir / "**" / "*.ply"), recursive=True)
+
+        import zipfile
         archive = Path(WORKROOT) / f"{slug}.zip"
-        shutil.make_archive(str(archive.with_suffix("")), "zip", root_dir=str(data_dir))
+        roots = {"data": data_dir, "out": out_dir, "web": ui_dir}
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+            for label, root in roots.items():
+                if not root.exists():
+                    continue
+                for p in root.rglob("*"):
+                    if p.is_file() or (p.is_symlink() and p.resolve().is_file()):
+                        z.write(p.resolve(), arcname=f"{slug}/{label}/{p.relative_to(root)}")
 
         import storage  # Stage B (sits next to this file)
         result_url = storage.upload(archive, key=f"results/{slug}.zip")
