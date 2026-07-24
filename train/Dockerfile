@@ -11,8 +11,9 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
         nodejs npm curl git && rm -rf /var/lib/apt/lists/*
 
-# extra python deps not in the nerfstudio image
-RUN pip install --no-cache-dir \
+# extra python deps not in the nerfstudio image.
+# The nerfstudio image exposes Python as `python3` (no bare `pip` on PATH) — use -m pip.
+RUN python3 -m pip install --no-cache-dir \
         ultralytics open3d opencv-python-headless boto3 runpod
 
 # vendored training scripts + storage helper
@@ -29,4 +30,4 @@ ENV HF_HOME=/runpod-volume/hf TORCH_HOME=/runpod-volume/torch \
     YOLO_CONFIG_DIR=/runpod-volume/yolo \
     TRAIN_WORKROOT=/runpod-volume/train
 WORKDIR /app
-CMD ["python", "-u", "/app/handler.py"]
+CMD ["python3", "-u", "/app/handler.py"]
