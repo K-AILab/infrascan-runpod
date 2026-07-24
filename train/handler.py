@@ -165,9 +165,12 @@ def handler(job):
         env["DEPTH_W"] = "0.1"
         env["DEPTH_START_ITER"] = "500"
         env["DEPTH_SCALE"] = str(scale)
+        # save checkpoints infrequently — each splatfacto ckpt is ~700MB-1GB (3M
+        # gaussians); every 2000 filled the disk. 5000 -> ~5 ckpts (few GB, fits
+        # the container disk) and guarantees a late checkpoint exists to export.
         _sh([PY, VENDOR / "ns_depthsup.py", "splatfacto",
              "--output-dir", out, "--experiment-name", slug,
-             "--max-num-iterations", str(iters), "--steps-per-save", "2000"]
+             "--max-num-iterations", str(iters), "--steps-per-save", "5000"]
             + MODEL_ARGS + data_args(str(ds)), env=env)
 
         # 7) export checkpoint -> splat.ply

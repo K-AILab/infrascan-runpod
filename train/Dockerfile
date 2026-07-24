@@ -25,9 +25,13 @@ RUN cd /app/train/vendor/node && npm install --omit=dev
 
 COPY train/handler.py /app/handler.py
 
-# weights + scratch live on the mounted network volume (cached across cold starts)
-ENV HF_HOME=/runpod-volume/hf TORCH_HOME=/runpod-volume/torch \
-    YOLO_CONFIG_DIR=/runpod-volume/yolo \
-    TRAIN_WORKROOT=/runpod-volume/train
+# Heavy training scratch + checkpoints go on the CONTAINER DISK (/train), NOT the
+# small network volume — splatfacto checkpoints are ~700MB each and filled the
+# volume mid-run ("PytorchStreamWriter … file write failed"). Bump the endpoint's
+# Container Disk to ~60GB. Model caches also go here (re-downloaded per cold start;
+# small, fine).
+ENV HF_HOME=/train/hf TORCH_HOME=/train/torch \
+    YOLO_CONFIG_DIR=/train/yolo \
+    TRAIN_WORKROOT=/train
 WORKDIR /app
 CMD ["python3", "-u", "/app/handler.py"]
