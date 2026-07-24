@@ -162,34 +162,43 @@ def handler(job):
         _run([py, "-m", "pipeline.runner", "--slug", slug], PLATFORM, env, "pipeline.runner")
         stages_status["pipeline.runner"] = "ok"
 
-        # 5) collect outputs from all three roots into ONE bundle, zip, upload:
-        #    data/<slug>  -> pointcloud.ply, cameras.json, intrinsics.json, depth/, views/
-        #    out/<slug>   -> index.faiss, embeddings.npy, object_ids.npy, metadata.json, proposals.jsonl
-        #    ui/_spaces/<slug> -> topdown/topdown.png + Data_/downsampled_web.ply
+        # 5) upload the UNPACKED dataset straight to S3 under scans/<slug>/ so the
+        #    home server stores NOTHING — the tri-viewer streams each file from S3.
+        #    Layout the viewer expects:
+        #      scans/<slug>/frames/*.jpg          (panoramas)
+        #      scans/<slug>/views/*.jpg           (perspective; served as panos/ too)
+        #      scans/<slug>/cameras.json, intrinsics.json
+        #      scans/<slug>/depth/frame_<i>.npz   (per-view depth)
+        #      scans/<slug>/pointcloud.ply        (for Phase-2 splat training)
+        import storage
+        s3c = storage._client()
+        bucket = os.environ["S3_BUCKET"]
+        prefix = f"scans/{slug}"
+
+        def _put(local: Path, key: str):
+            s3c.upload_file(str(local), bucket, key)
+
+        nfiles = 0
+        for sub in ("frames", "views"):
+            for p in sorted((data_dir / sub).glob("*")):
+                if p.is_file():
+                    _put(p, f"{prefix}/{sub}/{p.name}"); nfiles += 1
+        for f in ("cameras.json", "intrinsics.json", "pointcloud.ply"):
+            if (data_dir / f).exists():
+                _put(data_dir / f, f"{prefix}/{f}"); nfiles += 1
+        ro = data_dir / "_da3_streaming" / "results_output"
+        if ro.is_dir():
+            for npz in sorted(ro.glob("frame_*.npz")):
+                _put(npz, f"{prefix}/depth/{npz.name}"); nfiles += 1
+
         n_views = len(glob.glob(str(views / "*.jpg")))
-        out_dir = Path(env["INFRASCAN_OUT_ROOT"]) / slug
-        ui_dir = Path(PLATFORM) / "ui" / "_spaces" / slug
-        pcds = glob.glob(str(data_dir / "**" / "*.ply"), recursive=True)
-
-        import zipfile
-        archive = Path(WORKROOT) / f"{slug}.zip"
-        roots = {"data": data_dir, "out": out_dir, "web": ui_dir}
-        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
-            for label, root in roots.items():
-                if not root.exists():
-                    continue
-                for p in root.rglob("*"):
-                    if p.is_file() or (p.is_symlink() and p.resolve().is_file()):
-                        z.write(p.resolve(), arcname=f"{slug}/{label}/{p.relative_to(root)}")
-
-        import storage  # Stage B (sits next to this file)
-        result_url = storage.upload(archive, key=f"results/{slug}.zip")
+        n_panos = len(glob.glob(str(frames / "*.jpg")))
+        print(f"[s3] uploaded {nfiles} files to s3://{bucket}/{prefix}/", flush=True)
 
         return {
-            "slug": slug, "result_url": result_url,
-            "num_views": n_views, "num_pointclouds": len(pcds),
-            "pointclouds": [os.path.basename(p) for p in pcds],
-            "stages": stages_status,
+            "slug": slug, "scan_prefix": prefix + "/",
+            "num_views": n_views, "num_panos": n_panos,
+            "num_files": nfiles, "stages": stages_status,
         }
     except Exception as e:
         return {
