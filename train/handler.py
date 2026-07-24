@@ -58,6 +58,7 @@ MODEL_ARGS = [
     "--pipeline.model.background-color", "random",
     "--pipeline.model.sh-degree", "3",
     "--pipeline.model.sh-degree-interval", "1000",
+    "--vis", "tensorboard",
     "--viewer.quit-on-train-completion", "True",
 ]
 
@@ -114,7 +115,7 @@ def _measure_depth_scale(ds: Path, probe_dir: Path) -> float:
     Reusing another scene's scale is the exact bug abai hit (PSNR plateau)."""
     _sh(["ns-train", "splatfacto", "--output-dir", str(probe_dir),
          "--experiment-name", "scaleprobe", "--max-num-iterations", "5",
-         "--vis", "none", "--viewer.quit-on-train-completion", "True"]
+         "--vis", "tensorboard", "--viewer.quit-on-train-completion", "True"]
         + data_args(str(ds)))
     dpt = sorted(probe_dir.glob("**/dataparser_transforms.json"))
     if not dpt:
