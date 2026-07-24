@@ -1,0 +1,6 @@
+{
+  "name": "ksplat-convert",
+  "type": "module",
+  "private": true,
+  "dependencies": { "@mkkellogg/gaussian-splats-3d": "^0.4.7", "three": "^0.160.1" }
+}
