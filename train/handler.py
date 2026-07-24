@@ -180,12 +180,15 @@ def handler(job):
         _sh([PY, VENDOR / "ns_export_gs.py", "--load-config", cfg[-1],
              "--output-dir", export])
 
-        # 8) splat.ply -> splat.ksplat
+        # 8) save the trained splat.ply to S3 FIRST (so a 50-min run is never lost
+        #    if a trailing step fails — we can re-convert without re-training).
         ply = export / "splat.ply"
+        s3.upload_file(str(ply), BUCKET, f"scans/{slug}/splat.ply")
+        print(f"[train] uploaded scans/{slug}/splat.ply", flush=True)
+
+        # 9) splat.ply -> splat.ksplat -> S3 so the tri-viewer's 3D tab can stream it
         ksplat = root / "splat.ksplat"
         _sh(["node", VENDOR / "node" / "ply2ksplat.mjs", ply, ksplat, "3"])
-
-        # 9) upload to S3 so the tri-viewer's 3D tab can stream it
         key = f"scans/{slug}/splat.ksplat"
         s3.upload_file(str(ksplat), BUCKET, key)
         print(f"[train] uploaded {key}", flush=True)

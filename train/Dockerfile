@@ -8,8 +8,12 @@ FROM ghcr.io/nerfstudio-project/nerfstudio:1.1.5
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
 USER root
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        nodejs npm curl git && rm -rf /var/lib/apt/lists/*
+# Node 20 (NodeSource) — the apt default is v12, too old for the ksplat lib's
+# optional-chaining (?.) syntax ("SyntaxError: Unexpected token '.'").
+RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates gnupg && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/* && node --version
 
 # extra python deps not in the nerfstudio image.
 # The nerfstudio image exposes Python as `python3` (no bare `pip` on PATH) — use -m pip.
