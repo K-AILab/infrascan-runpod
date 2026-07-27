@@ -4,8 +4,11 @@
 FROM pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ffmpeg libgl1 libglib2.0-0 ca-certificates curl \
+        git build-essential ffmpeg libgl1 libglib2.0-0 ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+# Triton (used by DA3's compute_weighted_mean_triton) JIT-compiles CUDA kernels
+# at runtime and needs a host C compiler; the -runtime base ships none.
+ENV CC=gcc CXX=g++
 WORKDIR /app
 
 # --- vendored app (already in the repo; no clone) ---
