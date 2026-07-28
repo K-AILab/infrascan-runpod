@@ -152,8 +152,14 @@ def handler(job):
         _run([py, str(P / "00_video_to_img.py"), "--video", str(eq),
               "--output_dir", str(frames), "--every_n", str(every_n)],
              PLATFORM, env, "00_video_to_img"); stages_status["00_video_to_img"] = "ok"
+        # 3 pitches (0, +30, -30) like the original pipeline: DA3 poses all of them
+        # (richer point cloud from up/down coverage) and the perspective viewer can
+        # look up/down. Gaussian TRAINING stays single-pitch — build_hires_dataset.py
+        # (train branch) filters to pz000 via its --pz 0 default, so only the eye-level
+        # crops feed splatfacto. Encoded in filenames as pz000/pz030/pz330.
         _run([py, str(P / "00a_sample_views.py"), "--input_dir", str(frames),
-              "--output_dir", str(views)], PLATFORM, env, "00a_sample_views")
+              "--output_dir", str(views), "--pitches", "-30", "0", "30"],
+             PLATFORM, env, "00a_sample_views")
         stages_status["00a_sample_views"] = "ok"
 
         # 3b) DA3 streaming: estimate camera POSES (+depth) from the views -> cameras.json.
