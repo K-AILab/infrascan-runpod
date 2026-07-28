@@ -103,6 +103,12 @@ def handler(job):
 
     # Isolate this run's data/DB under the work root; point the platform config at it.
     run_root = Path(WORKROOT) / slug
+    # WORKROOT is a persistent volume keyed by slug, so a re-scan would otherwise inherit the
+    # previous run's DA3 chunk files (_da3_streaming/pcd/*_pcd.ply). merge_ply_files globs those,
+    # mixing stale + fresh chunks into a corrupt pointcloud.ply whose header count != its body
+    # (crashes training / silently drops points). Start every job from a clean dir. The DA3
+    # weights live OUTSIDE run_root (WORKROOT.parent/da3_weights), so they are not touched.
+    shutil.rmtree(run_root, ignore_errors=True)
     run_root.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env["INFRASCAN_DB_PATH"] = str(run_root / "infrascan.db")
