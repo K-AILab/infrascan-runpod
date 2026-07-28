@@ -31,6 +31,11 @@ STAGES = [
     "downsample_ply",
 ]
 
+# Cosmetic/derived stages: a failure here must NOT fail the whole scan (the core
+# reconstruction + views + search index are already done). We log it loudly and
+# keep going so the scan still reaches "ready" and training still dispatches.
+OPTIONAL_STAGES = {"gen_topdown", "downsample_ply"}
+
 
 def run_stage(stage: str, slug: str) -> tuple[int, str]:
     """Invoke pipeline/<stage>.py for one space. Returns (exit_code, last_stderr_chunk)."""
@@ -62,6 +67,12 @@ def main() -> None:
             hint = FAILURE_HINTS.get(stage, f"The {stage} step exited with code {rc}.")
             record_stage_failure(args.slug, stage, hint)
             print(f"[runner] {stage} failed (rc={rc}): {hint}")
+            # surface the REAL error, not just the hint, so failures are diagnosable
+            if err.strip():
+                print(f"[runner] --- {stage} stderr (tail) ---\n{err}\n[runner] --- end stderr ---")
+            if stage in OPTIONAL_STAGES:
+                print(f"[runner] {stage} is optional — continuing without it.")
+                continue
             sys.exit(1)
         record_stage_ok(args.slug, stage)
 
