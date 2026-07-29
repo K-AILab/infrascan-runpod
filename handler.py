@@ -125,8 +125,22 @@ def handler(job):
             os.environ[k] = env[k]
         from app import config as cfg
         from app import spaces as space_repo
+        from app import db as _appdb
         from app.db import init as db_init, get_conn
         from app.auth import create_user
+        # RunPod reuses the Python process across jobs (warm workers). config.* paths
+        # are import-time constants and get_conn() caches a thread-local connection,
+        # so a 2nd job would otherwise bootstrap the space into the PREVIOUS job's
+        # run_root DB — then the stage subprocesses (correct env path) open a fresh
+        # empty DB and die with "Space not in the database". Re-pin the paths + drop
+        # the cached connection so every job uses its own run_root DB.
+        cfg.DB_PATH   = Path(env["INFRASCAN_DB_PATH"]).resolve()
+        cfg.DATA_ROOT = Path(env["INFRASCAN_DATA_ROOT"]).resolve()
+        cfg.OUT_ROOT  = Path(env["INFRASCAN_OUT_ROOT"]).resolve()
+        if getattr(_appdb._local, "conn", None) is not None:
+            try: _appdb._local.conn.close()
+            except Exception: pass
+            _appdb._local.conn = None
         cfg.ensure_dirs(); db_init()
         if not space_repo.by_slug(slug):
             # spaces.owner_id is a FK to users(id) (TEXT) — need a real user first.
