@@ -92,8 +92,53 @@ def _ensure_da3_weights():
     print(f"[weights] linked {list(DA3_WEIGHTS)} into {wdir}", flush=True)
 
 
+def _disk_report(tag=""):
+    """Print volume free space + available RAM so logs show headroom per job.
+    Lets us tell a disk-full failure (No space left on device) apart from a GPU
+    OOM when a stage exits 1."""
+    p = Path(WORKROOT)
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    try:
+        du = shutil.disk_usage(str(p))
+        print(f"[disk {tag}] {p}: free={du.free/1e9:.1f}GB "
+              f"used={du.used/1e9:.1f}GB total={du.total/1e9:.1f}GB", flush=True)
+    except Exception as e:
+        print(f"[disk {tag}] usage failed: {e}", flush=True)
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable"):
+                print(f"[mem {tag}] {line.strip()}", flush=True)
+                break
+    except Exception:
+        pass
+
+
+def _maintenance(action):
+    """Volume maintenance, no pipeline run. Dispatch with e.g.
+        {"input": {"maintenance": "df"}}     -> just report free space
+        {"input": {"maintenance": "purge"}}  -> delete leftover per-run dirs under WORKROOT
+    Every job already wipes its own run_root at start AND end (see handler), so on a
+    healthy deployment `purge` should find little. It exists to reclaim the backlog of
+    run dirs left by older handler versions that never cleaned up after upload. DA3
+    weights live OUTSIDE WORKROOT (WORKROOT.parent/da3_weights) and are never touched."""
+    root = Path(WORKROOT)
+    _disk_report("before")
+    removed = []
+    if action == "purge" and root.exists():
+        for child in sorted(root.iterdir()):
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+                removed.append(child.name)
+        print(f"[maintenance] purged {len(removed)} run dir(s): {removed}", flush=True)
+    _disk_report("after")
+    return {"maintenance": action, "removed": removed, "count": len(removed), "root": str(root)}
+
+
 def handler(job):
     inp = job.get("input", {}) or {}
+    if inp.get("maintenance"):
+        return _maintenance(inp["maintenance"])
     video_url = inp.get("video_url")
     if not video_url:
         return {"error": "provide input.video_url"}
@@ -110,6 +155,7 @@ def handler(job):
     # weights live OUTSIDE run_root (WORKROOT.parent/da3_weights), so they are not touched.
     shutil.rmtree(run_root, ignore_errors=True)
     run_root.mkdir(parents=True, exist_ok=True)
+    _disk_report("job-start")
     env = dict(os.environ)
     env["INFRASCAN_DB_PATH"] = str(run_root / "infrascan.db")
     env["INFRASCAN_DATA_ROOT"] = str(run_root / "data")
@@ -188,6 +234,27 @@ def handler(job):
         _run([py, "-m", "pipeline.runner", "--slug", slug], PLATFORM, env, "pipeline.runner")
         stages_status["pipeline.runner"] = "ok"
 
+        # 4b) operator removal (pano_clean): erase the camera operator from the equirect
+        #     panoramas via YOLO-seg + LaMa nadir reprojection, into data/<slug>/pano_clean/
+        #     frames/. NON-FATAL — a bad inpaint or a crash here must never fail the ingest,
+        #     so it runs in its own try/except and just records a skipped status. Weights are
+        #     baked into the image (Dockerfile): YOLO at /app/weights, big-lama.pt under the
+        #     TORCH_HOME we point at /app/lama_cache, so no runtime download and no volume use.
+        pano_clean_dir = data_dir / "pano_clean" / "frames"
+        try:
+            pc_env = dict(env)
+            pc_env["TORCH_HOME"] = os.environ.get("LAMA_TORCH_HOME", "/app/lama_cache")
+            pc_env["YOLO_CONFIG_DIR"] = "/tmp/ultralytics"
+            _run([py, "/app/pano_clean.py",
+                  "--frames", str(frames), "--out", str(pano_clean_dir),
+                  "--yolo", os.environ.get("PANO_CLEAN_YOLO", "/app/weights/yolo11x-seg.pt")],
+                 "/app", pc_env, "pano_clean")
+            stages_status["pano_clean"] = "ok"
+        except Exception as e:
+            stages_status["pano_clean"] = f"skipped: {type(e).__name__}: {e}"
+            print(f"[pano_clean] non-fatal failure, panoramas keep the operator: {e}",
+                  flush=True)
+
         # 5) upload the UNPACKED dataset straight to S3 under scans/<slug>/ so the
         #    home server stores NOTHING — the tri-viewer streams each file from S3.
         #    Layout the viewer expects:
@@ -217,13 +284,26 @@ def handler(job):
             for npz in sorted(ro.glob("frame_*.npz")):
                 _put(npz, f"{prefix}/depth/{npz.name}"); nfiles += 1
 
+        # operator-removed panoramas (if the pano_clean step produced them). The viewer
+        # picks these up when scenes.json has panoClean=true (set by runpod_worker.py):
+        #   pano_clean/<slug>/frames/*.jpg   cleaned equirect panos the viewer serves
+        #   pano_clean/<slug>/cameras.json   copied so the pano viewer is self-contained
+        n_clean = 0
+        if pano_clean_dir.is_dir():
+            for p in sorted(pano_clean_dir.glob("*.jpg")):
+                _put(p, f"pano_clean/{slug}/frames/{p.name}"); n_clean += 1; nfiles += 1
+            if n_clean and (data_dir / "cameras.json").exists():
+                _put(data_dir / "cameras.json", f"pano_clean/{slug}/cameras.json"); nfiles += 1
+            print(f"[s3] uploaded {n_clean} cleaned panoramas to "
+                  f"s3://{bucket}/pano_clean/{slug}/", flush=True)
+
         n_views = len(glob.glob(str(views / "*.jpg")))
         n_panos = len(glob.glob(str(frames / "*.jpg")))
         print(f"[s3] uploaded {nfiles} files to s3://{bucket}/{prefix}/", flush=True)
 
         return {
             "slug": slug, "scan_prefix": prefix + "/",
-            "num_views": n_views, "num_panos": n_panos,
+            "num_views": n_views, "num_panos": n_panos, "num_clean": n_clean,
             "num_files": nfiles, "stages": stages_status,
         }
     except Exception as e:
@@ -234,6 +314,15 @@ def handler(job):
             "stages_ok": stages_status,
             "trace": traceback.format_exc()[-1500:],
         }
+    finally:
+        # Reclaim the volume. On success the dataset is already on S3; on failure the
+        # job retries from scratch (start-of-job rmtree). Leaving run_root behind — the
+        # video, frames/, views/ (36x the frames), pointcloud, DA3 chunks, depth npz — is
+        # what fills the volume over many scans, since each is keyed by slug and only ever
+        # freed by re-scanning that same slug. Clean it here so every job nets to ~zero.
+        # DA3 weights live OUTSIDE run_root (WORKROOT.parent/da3_weights) and persist.
+        shutil.rmtree(run_root, ignore_errors=True)
+        _disk_report("job-end")
 
 
 runpod.serverless.start({"handler": handler})

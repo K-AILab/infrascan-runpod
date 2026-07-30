@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir \
         depth-anything-3 ultralytics \
         "open3d>=0.18" faiss-cpu numba pypose einops safetensors \
         pandas prettytable \
+        simple_lama_inpainting \
         git+https://github.com/openai/CLIP.git \
         git+https://github.com/cvg/LightGlue.git \
         boto3 runpod
@@ -45,14 +46,28 @@ RUN mkdir -p /app/infrascan-platform/external/object_proposals/fastsam/weights &
       https://huggingface.co/An-619/FastSAM/resolve/main/FastSAM-x.pt || \
     echo "WARN: FastSAM weight fetch failed"
 
+# --- operator-removal (pano_clean) weights, BAKED into the image (small: ~320MB total)
+#     so the step needs no runtime download and adds nothing to the network volume.
+#     YOLO11x-seg (~125MB) loads from an explicit path (PANO_CLEAN_YOLO). LaMa's big-lama.pt
+#     (~196MB) is looked up by SimpleLama() at torch.hub.get_dir()/checkpoints/ — we bake it
+#     under /app/lama_cache and point the pano_clean subprocess's TORCH_HOME there. ---
+RUN mkdir -p /app/weights /app/lama_cache/hub/checkpoints && \
+    curl -fsSL -o /app/weights/yolo11x-seg.pt \
+      https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11x-seg.pt && \
+    curl -fsSL -o /app/lama_cache/hub/checkpoints/big-lama.pt \
+      https://github.com/enesmsahin/simple-lama-inpainting/releases/download/v0.1.0/big-lama.pt
+
 # --- Weights cache + work dir live on the mounted NETWORK VOLUME (/runpod-volume).
 #     Image stays small (no baked weights); DA3 (GIANT) + DINOv2 download ONCE onto
 #     the volume on the first cold start, then every future worker reuses them. ---
 ENV HF_HOME=/runpod-volume/hf TORCH_HOME=/runpod-volume/torch \
     INFRASCAN_PLATFORM_DIR=/app/infrascan-platform \
     INFRASCAN_WORKROOT=/runpod-volume/runs \
-    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    PANO_CLEAN_YOLO=/app/weights/yolo11x-seg.pt \
+    LAMA_TORCH_HOME=/app/lama_cache
 
 COPY handler.py /app/handler.py
 COPY storage.py /app/storage.py
+COPY pano_clean.py /app/pano_clean.py
 CMD ["python", "-u", "/app/handler.py"]
