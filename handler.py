@@ -36,11 +36,32 @@ PLATFORM = os.environ.get("INFRASCAN_PLATFORM_DIR", "/app/infrascan-platform")
 # Per-run working data lives on the (optionally mounted) volume, else /workspace.
 WORKROOT = os.environ.get("INFRASCAN_WORKROOT", "/workspace/runs")
 
+# Bump when rebuilding so we can confirm (via a cheap maintenance:df call) that the
+# endpoint is actually serving the NEW image before kicking off an expensive re-run.
+HANDLER_VERSION = "2026-07-30-surface-stderr"
+
 # The proven entrypoint is `python -m pipeline.runner --slug <slug>`, which runs
 # 00b_gen_da3 -> 01_propose -> 02_embed -> 02b_match_views -> 03_backproject
 # -> 03b_merge_groups -> 04_index -> gen_topdown -> downsample_ply (through the
 # point cloud). We call that directly rather than re-implementing the stage list.
 PRE_STAGES = ["_00_stitch_insv", "00_video_to_img", "00a_sample_views", "00b_da3_streaming"]
+
+
+def _meaningful_stderr(text, n=80):
+    r"""DA3/tqdm floods stderr with progress bars (\r-redrawn), which otherwise
+    bury the real Python traceback in the last-3000-chars tail — that's why every
+    DA3 failure only showed 'Extracting features: 97%...' with no actual error.
+    Split on \r and \n, drop the progress-bar fragments, keep the last n real
+    lines (where the traceback lives)."""
+    out = []
+    for ln in (text or "").replace("\r", "\n").split("\n"):
+        s = ln.strip()
+        if not s:
+            continue
+        if "%|" in s or "it/s]" in s or s.startswith("Extracting features"):
+            continue
+        out.append(s)
+    return "\n".join(out[-n:])
 
 
 def _run(cmd, cwd, env, stage):
@@ -50,7 +71,10 @@ def _run(cmd, cwd, env, stage):
     tail = (r.stderr or "")[-3000:]
     print((r.stdout or "")[-2000:], flush=True)
     if r.returncode != 0:
-        raise RuntimeError(f"stage {stage} exited {r.returncode}\n{tail}")
+        # Surface the REAL error: strip tqdm progress lines so the traceback shows.
+        errtail = _meaningful_stderr(r.stderr) or tail
+        raise RuntimeError(f"stage {stage} exited {r.returncode}\n"
+                           f"--- stderr (progress bars stripped) ---\n{errtail}")
     return tail
 
 
@@ -132,7 +156,8 @@ def _maintenance(action):
                 removed.append(child.name)
         print(f"[maintenance] purged {len(removed)} run dir(s): {removed}", flush=True)
     _disk_report("after")
-    return {"maintenance": action, "removed": removed, "count": len(removed), "root": str(root)}
+    return {"maintenance": action, "removed": removed, "count": len(removed),
+            "root": str(root), "version": HANDLER_VERSION}
 
 
 def handler(job):
