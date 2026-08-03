@@ -228,6 +228,23 @@ def run(args) -> dict:
         shutil.rmtree(REPO / "out", ignore_errors=True)
 
 
+def _dump_error_s3(args, text: str) -> None:
+    """Best-effort: write the failure to scans/<slug>/scenegraph_error.txt so it
+    can be inspected without RunPod run-logs (which have no public API)."""
+    try:
+        s3 = boto3.client(
+            "s3", region_name=os.environ.get("S3_REGION", "us-east-1"),
+            aws_access_key_id=os.environ.get("S3_ACCESS_KEY"),
+            aws_secret_access_key=os.environ.get("S3_SECRET_KEY"))
+        bucket = args.bucket or os.environ["S3_BUCKET"]
+        s3.put_object(Bucket=bucket, Key=f"scans/{args.slug}/scenegraph_error.txt",
+                      Body=text.encode("utf-8", "replace"))
+        print(f"[scenegraph] wrote error to scans/{args.slug}/scenegraph_error.txt",
+              flush=True)
+    except Exception as e:
+        print(f"[scenegraph] could not upload error dump: {e}", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--slug", required=True)
@@ -253,12 +270,15 @@ def main():
     try:
         result = run(args)
     except Exception as e:
+        tb = traceback.format_exc()
         print(f"[scenegraph] FAILED: {type(e).__name__}: {e}", flush=True)
-        print(traceback.format_exc()[-2500:], flush=True)
+        print(tb[-2500:], flush=True)
+        _dump_error_s3(args, f"{type(e).__name__}: {e}\n\n{tb}")
         sys.exit(1)
 
     if result.get("error"):
         print(f"[scenegraph] ERROR: {result['error']}", flush=True)
+        _dump_error_s3(args, str(result["error"]))
         sys.exit(1)
     print("[scenegraph] RESULT " + json.dumps(result), flush=True)
 

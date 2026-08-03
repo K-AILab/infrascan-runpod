@@ -138,6 +138,31 @@ def handler(job):
     slug = inp.get("slug")
     if not slug:
         return {"error": "provide input.slug"}
+
+    # Fast path / manual trigger: re-run ONLY the scene-graph stage on the
+    # already-trained splat in S3 (no retrain). Reads scans/<slug>/ (which now
+    # includes splat.ply) and runs run_scenegraph on those local files.
+    if inp.get("only_scenegraph"):
+        root = WORKROOT / slug
+        if root.exists():
+            shutil.rmtree(root)
+        src = root / "src"
+        try:
+            _dl_scan(slug, src)          # incl. splat.ply + pointcloud/cameras/intrinsics/views
+            _sh([PY_SG, SG_DIR / "run_scenegraph.py", "--slug", slug,
+                 "--splat", src / "splat.ply", "--pointcloud", src / "pointcloud.ply",
+                 "--cameras", src / "cameras.json",
+                 "--intrinsics", src / "intrinsics.json",
+                 "--views", src / "views", "--workdir", root / "sg", "--bucket", BUCKET])
+            return {"slug": slug, "only_scenegraph": True, "has_scene_graph": True,
+                    "handler_version": HANDLER_VERSION}
+        except subprocess.CalledProcessError as e:
+            return {"slug": slug, "only_scenegraph": True, "has_scene_graph": False,
+                    "error": f"scenegraph rc={e.returncode} — see scans/{slug}/scenegraph_error.txt",
+                    "handler_version": HANDLER_VERSION}
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     iters = int(inp.get("iters", 30000))
     use_masks = bool(inp.get("masks", True))
 
