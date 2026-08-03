@@ -28,8 +28,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # extra python deps not in the nerfstudio image (GLOBAL env, used by training).
 # The nerfstudio image exposes Python as `python3` (no bare `pip` on PATH) — use -m pip.
+# virtualenv: the nerfstudio base's python lacks the `venv`/ensurepip bootstrap,
+# so we use virtualenv (bundles its own pip) to create the scene-graph venvs below.
 RUN python3 -m pip install --no-cache-dir \
-        ultralytics open3d opencv-python-headless boto3 runpod
+        ultralytics open3d opencv-python-headless boto3 runpod virtualenv
 
 # ---- scene-graph venvs (Approach A) layered on the base torch/CUDA ----------
 # Two isolated venvs (the pipeline's two envs must NOT be merged), both
@@ -42,7 +44,7 @@ RUN python3 -m pip install --no-cache-dir \
 # venv-splat: OWLv2 detector. torch + gsplat + numpy/scipy/opencv/Pillow all come
 # from the base image / global pip via --system-site-packages, so install ONLY the
 # few extras the splat_analyzer needs (avoids resolver clashes with base pins).
-RUN python3 -m venv --system-site-packages /opt/venv-splat && \
+RUN python3 -m virtualenv --system-site-packages /opt/venv-splat && \
     /opt/venv-splat/bin/pip install --no-cache-dir -U pip && \
     /opt/venv-splat/bin/pip install --no-cache-dir \
         "transformers==4.50.3" "plyfile==1.1.3" "imageio==2.37.3" "six==1.17.0"
@@ -54,7 +56,7 @@ RUN /opt/venv-splat/bin/python -c "import torch,transformers;print('[build] venv
 # venv-main: geometry + CLIP + upload. open3d/opencv/boto3/numpy come from the
 # global pip layer above (visible via --system-site-packages); install only the
 # extras (CLIP, sklearn, plyfile).
-RUN python3 -m venv --system-site-packages /opt/venv-main && \
+RUN python3 -m virtualenv --system-site-packages /opt/venv-main && \
     /opt/venv-main/bin/pip install --no-cache-dir -U pip && \
     /opt/venv-main/bin/pip install --no-cache-dir \
         open_clip_torch scikit-learn "plyfile==1.1.3"
