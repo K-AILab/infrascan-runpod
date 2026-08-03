@@ -1,4 +1,0 @@
-[submodule "ui/legacy-viewer"]
-	path = ui/legacy-viewer
-	url = https://github.com/K-AILab/3d-object-tagging.git
-	branch = handoff/infrascan-platform
