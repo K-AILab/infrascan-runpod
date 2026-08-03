@@ -1,0 +1,12 @@
+{
+  "spaces": {
+    "example": {
+      "title": "Example Capture",
+      "data_root": "data/example",
+      "out_dir":   "out/fastsam_example",
+      "y_up":      true,
+      "n_views":   0,
+      "n_scanpoints": 0
+    }
+  }
+}

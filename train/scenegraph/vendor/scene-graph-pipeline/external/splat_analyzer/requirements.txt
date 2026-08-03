@@ -1,0 +1,22 @@
+# CUDA / server dependency set — used by the Dockerfile and NVIDIA local installs.
+# On Apple Silicon do NOT use this file (the `gsplat` line is the CUDA build and won't
+# compile on a Mac). Run ./install_mac.sh instead — it installs the Metal renderer.
+#
+# Versions are pinned to the deployed server build for reproducibility. torch/torchvision
+# are intentionally left unpinned: the Docker base image provides them, and local CUDA
+# installs install a CUDA-matched torch first (see README), so pinning would fight that.
+# numpy/Pillow come from the conda base image — numpy is constrained (<2) rather than pinned.
+fastapi==0.138.0
+uvicorn[standard]==0.49.0
+python-multipart==0.0.32
+torch
+torchvision
+gsplat==1.5.3
+transformers==4.50.3
+numpy<2
+imageio==2.37.3
+plyfile==1.1.3
+opencv-python-headless==4.11.0.86
+Pillow
+scipy==1.15.3
+six==1.17.0

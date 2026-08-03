@@ -36,6 +36,14 @@ VENDOR = Path("/app/train/vendor")
 WORKROOT = Path(os.environ.get("TRAIN_WORKROOT", "/runpod-volume/train"))
 PY = sys.executable
 
+# Scene-graph stage (Approach A) runs inline after training on the same warm
+# worker. It lives in its own venv (open3d + open_clip + boto3) inside the image.
+SG_DIR = Path("/app/train/scenegraph")
+PY_SG = os.environ.get("PY_MAIN", "/opt/venv-main/bin/python")
+
+# Bump on every image change so the endpoint's returned build can be identified.
+HANDLER_VERSION = "2026-08-03-scenegraph-merge"
+
 # abai's proven splatfacto recipe (shinhan-pz000-hires-30k / factory13 depthsup)
 MODEL_ARGS = [
     "--pipeline.model.num-downscales", "0",
@@ -193,8 +201,29 @@ def handler(job):
         s3.upload_file(str(ksplat), BUCKET, key)
         print(f"[train] uploaded {key}", flush=True)
 
+        # 10) scene graph (Approach A: OWLv2-on-splat) on the just-trained splat.
+        #     Runs on the SAME warm GPU worker and reads the local files
+        #     (export/splat.ply + src/{pointcloud.ply,cameras.json,intrinsics.json,
+        #     views/}) — no re-download. Uploads scans/<slug>/scene_graph.json.
+        #     NON-FATAL: the splat is already safely in S3, so a scene-graph
+        #     failure must never fail the training job.
+        has_scene_graph = False
+        try:
+            _sh([PY_SG, SG_DIR / "run_scenegraph.py", "--slug", slug,
+                 "--splat", ply, "--pointcloud", src / "pointcloud.ply",
+                 "--cameras", src / "cameras.json",
+                 "--intrinsics", src / "intrinsics.json",
+                 "--views", src / "views", "--workdir", root / "sg",
+                 "--bucket", BUCKET])
+            has_scene_graph = True
+            print(f"[train] uploaded scans/{slug}/scene_graph.json", flush=True)
+        except Exception as e:
+            print(f"[train] scenegraph stage failed (non-fatal): {e}", flush=True)
+
         return {"slug": slug, "has3d": True, "splat_key": key,
-                "depth_scale": scale, "iters": iters}
+                "has_scene_graph": has_scene_graph,
+                "depth_scale": scale, "iters": iters,
+                "handler_version": HANDLER_VERSION}
     except subprocess.CalledProcessError as e:
         return {"error": f"stage failed rc={e.returncode}: {e.cmd[:3]}",
                 "trace": traceback.format_exc()[-1500:]}
