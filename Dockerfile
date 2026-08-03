@@ -1,6 +1,6 @@
 # Full-pipeline GPU serverless worker — builds from THIS (private) repo.
-# The infrascan-platform code is vendored in at ./infrascan-platform, so there is
-# NO git clone and NO token needed. Build context = repo root.
+# The base pipeline is vendored at ./pipeline (infrascan-platform stripped to
+# pipeline-only); our extra stages live in ./pipeline_panoclean. Build ctx = repo root.
 FROM pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -11,12 +11,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV CC=gcc CXX=g++
 WORKDIR /app
 
-# --- vendored app (already in the repo; no clone) ---
-COPY infrascan-platform /app/infrascan-platform
+# --- base pipeline (vendored infrascan-platform, stripped to pipeline-only: app + pipeline + external) ---
+COPY pipeline /app/pipeline
 
-# --- python deps: platform + GPU extras, DA3, the 3 vision models, storage + runpod SDK ---
-RUN pip install --no-cache-dir /app/infrascan-platform[gpu] || \
-    pip install --no-cache-dir -e /app/infrascan-platform
+# --- python deps: pipeline pkg + GPU extras, DA3, the 3 vision models, storage + runpod SDK ---
+RUN pip install --no-cache-dir /app/pipeline[gpu] || \
+    pip install --no-cache-dir -e /app/pipeline
 RUN pip install --no-cache-dir \
         depth-anything-3 ultralytics \
         "open3d>=0.18" faiss-cpu numba pypose einops safetensors \
@@ -41,8 +41,8 @@ RUN pip install --no-cache-dir --force-reinstall \
 RUN pip install --no-cache-dir --force-reinstall --no-deps xformers==0.0.27.post2
 
 # --- FastSAM weights (small) ---
-RUN mkdir -p /app/infrascan-platform/external/object_proposals/fastsam/weights && \
-    curl -fsSL -o /app/infrascan-platform/external/object_proposals/fastsam/weights/FastSAM-x.pt \
+RUN mkdir -p /app/pipeline/external/object_proposals/fastsam/weights && \
+    curl -fsSL -o /app/pipeline/external/object_proposals/fastsam/weights/FastSAM-x.pt \
       https://huggingface.co/An-619/FastSAM/resolve/main/FastSAM-x.pt || \
     echo "WARN: FastSAM weight fetch failed"
 
@@ -61,7 +61,7 @@ RUN mkdir -p /app/weights /app/lama_cache/hub/checkpoints && \
 #     Image stays small (no baked weights); DA3 (GIANT) + DINOv2 download ONCE onto
 #     the volume on the first cold start, then every future worker reuses them. ---
 ENV HF_HOME=/runpod-volume/hf TORCH_HOME=/runpod-volume/torch \
-    INFRASCAN_PLATFORM_DIR=/app/infrascan-platform \
+    INFRASCAN_PLATFORM_DIR=/app/pipeline \
     INFRASCAN_WORKROOT=/runpod-volume/runs \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     PANO_CLEAN_YOLO=/app/weights/yolo11x-seg.pt \
@@ -69,5 +69,5 @@ ENV HF_HOME=/runpod-volume/hf TORCH_HOME=/runpod-volume/torch \
 
 COPY handler.py /app/handler.py
 COPY storage.py /app/storage.py
-COPY pano_clean.py /app/pano_clean.py
+COPY pipeline_panoclean /app/pipeline_panoclean
 CMD ["python", "-u", "/app/handler.py"]

@@ -32,7 +32,7 @@ from pathlib import Path
 import runpod
 
 # ---- where the CEO's platform lives in the image (cloned by the Dockerfile) ----
-PLATFORM = os.environ.get("INFRASCAN_PLATFORM_DIR", "/app/infrascan-platform")
+PLATFORM = os.environ.get("INFRASCAN_PLATFORM_DIR", "/app/pipeline")
 # Per-run working data lives on the (optionally mounted) volume, else /workspace.
 WORKROOT = os.environ.get("INFRASCAN_WORKROOT", "/workspace/runs")
 
@@ -270,7 +270,7 @@ def handler(job):
             pc_env = dict(env)
             pc_env["TORCH_HOME"] = os.environ.get("LAMA_TORCH_HOME", "/app/lama_cache")
             pc_env["YOLO_CONFIG_DIR"] = "/tmp/ultralytics"
-            _run([py, "/app/pano_clean.py",
+            _run([py, "/app/pipeline_panoclean/pano_clean.py",
                   "--frames", str(frames), "--out", str(pano_clean_dir),
                   "--yolo", os.environ.get("PANO_CLEAN_YOLO", "/app/weights/yolo11x-seg.pt")],
                  "/app", pc_env, "pano_clean")

@@ -52,9 +52,6 @@ dev = [
     "ruff>=0.3",
 ]
 
-[project.scripts]
-infrascan = "scripts.cli:main"
-
 [tool.setuptools.packages.find]
-include = ["app*", "scripts*", "pipeline*"]
+include = ["app*", "pipeline*"]
 exclude = ["tests*", "data*", "out*", "external*"]
