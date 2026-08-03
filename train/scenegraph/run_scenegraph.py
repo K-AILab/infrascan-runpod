@@ -75,6 +75,57 @@ def _link_or_copy(src: Path, dst: Path) -> None:
             shutil.copy2(src, dst)
 
 
+def _dump_debug(work: Path, slug: str, bucket: str) -> None:
+    """Best-effort: upload the pipeline's intermediate box files + a counts summary
+    to scans/<slug>/scenegraph/debug/ so we can see WHERE boxes drop to zero
+    (detection vs. gaussian-count filter vs. refit)."""
+    if not bucket:
+        return
+    try:
+        s3 = boto3.client(
+            "s3", region_name=os.environ.get("S3_REGION", "us-east-1"),
+            aws_access_key_id=os.environ.get("S3_ACCESS_KEY"),
+            aws_secret_access_key=os.environ.get("S3_SECRET_KEY"))
+    except Exception:
+        return
+
+    def count(p: Path):
+        try:
+            d = json.loads(p.read_text())
+            if isinstance(d, list):
+                return len(d)
+            if isinstance(d, dict):
+                for k in ("boxes", "objects", "detections", "interactions", "nodes"):
+                    if isinstance(d.get(k), list):
+                        return len(d[k])
+                return {k: (len(v) if isinstance(v, list) else "?") for k, v in d.items()}
+        except Exception as e:
+            return f"unreadable: {e}"
+
+    files = {
+        "interactions.json": work / "owl" / "interactions.json",
+        "scene_boxes.json": work / "scene_boxes.json",
+        "scene_boxes_filtered.json": work / "scene_boxes_filtered.json",
+        "scene_boxes_refit.json": work / "scene_boxes_refit.json",
+    }
+    counts = {}
+    for name, p in files.items():
+        if p.exists():
+            counts[name] = count(p)
+            try:
+                s3.upload_file(str(p), bucket, f"scans/{slug}/scenegraph/debug/{name}")
+            except Exception:
+                pass
+        else:
+            counts[name] = "MISSING"
+    try:
+        s3.put_object(Bucket=bucket, Key=f"scans/{slug}/scenegraph/debug/counts.json",
+                      Body=json.dumps(counts, indent=2).encode())
+    except Exception:
+        pass
+    print("[scenegraph] debug counts: " + json.dumps(counts), flush=True)
+
+
 def _bbox_diag(ply_path: Path) -> float:
     """Diagonal of a point cloud / splat's xyz bounding box (points only, cheap).
     open3d reads x,y,z and ignores the splat's SH/opacity columns."""
@@ -215,6 +266,13 @@ def run(args) -> dict:
                 "labels": sg["labels"], "scale_to_meters": scale}
 
     finally:
+        # dump intermediate box files + counts to S3 BEFORE cleaning scratch, so
+        # we can see where boxes vanish (only when the run didn't fully succeed —
+        # a good run's counts are implicit in the final scene_graph.json).
+        try:
+            _dump_debug(work, slug, args.bucket or os.environ.get("S3_BUCKET"))
+        except Exception:
+            pass
         # clean the run's scratch AND the per-slug staging we wrote under REPO
         shutil.rmtree(work, ignore_errors=True)
         # data_root uses symlinks into the train dir — unlink them, don't follow
