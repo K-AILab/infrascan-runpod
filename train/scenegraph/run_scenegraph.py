@@ -47,13 +47,22 @@ DEFAULT_PROMPT = (
 )
 
 
+_LOG = []   # accumulates every stage's stdout/stderr for the S3 debug/pipeline.log
+
+
 def _sh(cmd, cwd=None, env=None):
-    """Run one stage as a subprocess; raise with captured stderr on failure."""
-    print("[scenegraph] $ " + " ".join(str(c) for c in cmd), flush=True)
+    """Run one stage as a subprocess; raise with captured stderr on failure.
+    Also accumulates all output into _LOG so _dump_debug can ship it to S3."""
+    line = "[scenegraph] $ " + " ".join(str(c) for c in cmd)
+    print(line, flush=True)
     r = subprocess.run([str(c) for c in cmd], cwd=cwd, env=env,
                        capture_output=True, text=True)
+    _LOG.append(line)
     if r.stdout:
+        _LOG.append(r.stdout)
         print(r.stdout[-2000:], flush=True)
+    if r.stderr:
+        _LOG.append("STDERR:\n" + r.stderr)
     if r.returncode != 0:
         raise RuntimeError(f"stage {Path(str(cmd[1])).name} exited {r.returncode}\n"
                            + (r.stderr or "")[-3000:])
@@ -118,6 +127,21 @@ def _dump_debug(work: Path, slug: str, bucket: str) -> None:
                 pass
         else:
             counts[name] = "MISSING"
+    # a few synthetic render frames (to eyeball whether the gsplat render is sane)
+    import glob
+    all_frames = sorted(glob.glob(str(work / "owl" / "frames" / "*")))
+    counts["n_frames"] = len(all_frames)
+    for fp in all_frames[:3]:
+        try:
+            s3.upload_file(fp, bucket, f"scans/{slug}/scenegraph/debug/frame_{Path(fp).name}")
+        except Exception:
+            pass
+    # full pipeline stdout/stderr (run_local prints "Done — N detected" + warnings)
+    try:
+        s3.put_object(Bucket=bucket, Key=f"scans/{slug}/scenegraph/debug/pipeline.log",
+                      Body=("\n".join(_LOG)).encode("utf-8", "replace"))
+    except Exception:
+        pass
     try:
         s3.put_object(Bucket=bucket, Key=f"scans/{slug}/scenegraph/debug/counts.json",
                       Body=json.dumps(counts, indent=2).encode())
