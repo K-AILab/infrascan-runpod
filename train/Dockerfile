@@ -10,12 +10,13 @@ FROM ghcr.io/nerfstudio-project/nerfstudio:1.1.5
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
 USER root
 
-# Fast build-time sanity check (cheap early layer): confirm the base torch/CUDA
-# and that nvcc exists — gsplat 1.5.3 (scene-graph render) JIT-compiles its CUDA
-# kernel at runtime and needs nvcc. Prints to the build log; fails loudly if gone.
-RUN python3 -c "import torch;print('[build] torch',torch.__version__,'cuda',torch.version.cuda)" && \
-    { command -v nvcc >/dev/null && nvcc --version | tail -1 && echo '[build] nvcc OK'; } || \
-    { echo '[build] ERROR: nvcc missing — gsplat cannot JIT-compile at runtime'; exit 1; }
+# Build-time info (cheap early layer): the nerfstudio image is a RUNTIME base —
+# it ships a PREBUILT gsplat (training uses it) but has NO nvcc. So the scene-graph
+# stage must REUSE that prebuilt gsplat (below, via --system-site-packages), never
+# compile its own. Print torch/gsplat/nvcc status; never fail on missing nvcc.
+RUN python3 -c "import torch;print('[build] torch',torch.__version__,'cuda',torch.version.cuda)"; \
+    python3 -c "import gsplat;print('[build] base gsplat',getattr(gsplat,'__version__','?'))" || echo '[build] WARN base gsplat not importable'; \
+    { command -v nvcc >/dev/null && echo "[build] nvcc: $(nvcc --version | tail -1)"; } || echo '[build] no nvcc (expected) — scene-graph reuses the base prebuilt gsplat'
 
 # Node 20 (NodeSource) — the apt default is v12, too old for the ksplat lib's
 # optional-chaining (?.) syntax. ninja/build-essential: gsplat's runtime JIT build.
@@ -32,18 +33,20 @@ RUN python3 -m pip install --no-cache-dir \
 
 # ---- scene-graph venvs (Approach A) layered on the base torch/CUDA ----------
 # Two isolated venvs (the pipeline's two envs must NOT be merged), both
-# --system-site-packages so they reuse the base image's torch (no second torch,
-# matched CUDA/ABI):
-#   /opt/venv-splat : gsplat 1.5.3 + transformers/OWLv2  (splat render + detect, GPU)
-#   /opt/venv-main  : open3d + open_clip + boto3          (geometry + CLIP + upload)
-# TORCH_CUDA_ARCH_LIST covers train's Ada+Ampere GPUs if gsplat AOT-builds; if it
-# JIT-builds at runtime instead, it targets the actual GPU and this is ignored.
+# --system-site-packages so they reuse the base image's torch AND its prebuilt
+# gsplat (no second torch, no gsplat compile — the base has no nvcc):
+#   /opt/venv-splat : (base gsplat) + transformers/OWLv2  (splat render + detect, GPU)
+#   /opt/venv-main  : open3d + open_clip + boto3           (geometry + CLIP + upload)
+# NOTE: gsplat is intentionally NOT installed here — it comes from the base image.
+# The final check confirms venv-splat actually sees gsplat + torch before we go on.
+# Install the vendored splat_analyzer requirements, minus torch/torchvision/gsplat
+# (torch + gsplat come from the base image via --system-site-packages).
+COPY train/scenegraph/vendor/scene-graph-pipeline/external/splat_analyzer/requirements.txt /tmp/req-splat.txt
 RUN python3 -m venv --system-site-packages /opt/venv-splat && \
     /opt/venv-splat/bin/pip install --no-cache-dir -U pip && \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" /opt/venv-splat/bin/pip install --no-cache-dir \
-        "numpy<2" "gsplat==1.5.3" "transformers==4.50.3" "imageio==2.37.3" \
-        "plyfile==1.1.3" "opencv-python-headless==4.11.0.86" "scipy==1.15.3" \
-        "six==1.17.0" Pillow
+    grep -viE '^(torch|torchvision|gsplat)([=<>!~ ]|$)' /tmp/req-splat.txt > /tmp/req-splat-clean.txt && \
+    /opt/venv-splat/bin/pip install --no-cache-dir -r /tmp/req-splat-clean.txt && \
+    /opt/venv-splat/bin/python -c "import torch,gsplat,transformers;print('[build] venv-splat OK — torch',torch.__version__,'gsplat',getattr(gsplat,'__version__','?'),'transformers',transformers.__version__)"
 RUN python3 -m venv --system-site-packages /opt/venv-main && \
     /opt/venv-main/bin/pip install --no-cache-dir -U pip && \
     /opt/venv-main/bin/pip install --no-cache-dir \
