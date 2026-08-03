@@ -38,7 +38,7 @@ WORKROOT = os.environ.get("INFRASCAN_WORKROOT", "/workspace/runs")
 
 # Bump when rebuilding so we can confirm (via a cheap maintenance:df call) that the
 # endpoint is actually serving the NEW image before kicking off an expensive re-run.
-HANDLER_VERSION = "2026-07-30-surface-stderr"
+HANDLER_VERSION = "2026-08-03-reorg"
 
 # The proven entrypoint is `python -m pipeline.runner --slug <slug>`, which runs
 # 00b_gen_da3 -> 01_propose -> 02_embed -> 02b_match_views -> 03_backproject
