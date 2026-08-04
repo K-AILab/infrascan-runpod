@@ -42,21 +42,36 @@ SG_DIR = Path("/app/train/scenegraph")
 PY_SG = os.environ.get("PY_SG", "/opt/venv-sg/bin/python")
 
 # Bump on every image change so the endpoint's returned build can be identified.
-HANDLER_VERSION = "2026-08-04-scenegraph-upstream-e4d9409"
+HANDLER_VERSION = "2026-08-04-detailfloater-v2"
 
-# abai's proven splatfacto recipe (shinhan-pz000-hires-30k / factory13 depthsup)
+# abai's detailfloater-v2 recipe (factory13-pz000-detailfloater-30k-v2), replacing the
+# earlier shinhan-pz000-hires-30k values. 7 knobs differ: 3 raise DETAIL (densify on a
+# 4x lower grad threshold, split smaller gaussians, densify 5k steps longer) and 4
+# suppress FLOATERS (cull faint / oversized / large-screen-space gaussians, and keep
+# screen-size culling active twice as long). Measured on factory13: LPIPS 0.481 -> 0.396,
+# and it replaced sharpen-100k as that space's deployed model.
+#
+# TWO CAVEATS, both unresolved at the time of this change:
+#  1. That measurement was made WITHOUT the EdgeAwareLogL1 depth loss this endpoint also
+#     applies (ns_depthsup.py patches splatfacto at runtime, so it leaves no trace in the
+#     saved config.yml and the pairing could not be confirmed either way). The combination
+#     of these knobs + depth supervision is therefore UNVERIFIED.
+#  2. More densification means more gaussians, so bigger checkpoints. This handler has
+#     already hit disk-full once (see steps-per-save below); watch for a regression.
+# Judge the result on LPIPS + a sharpness proxy, NOT PSNR: on these scenes MSE-based PSNR
+# rewards blur, so it can be improved by making the model worse.
 MODEL_ARGS = [
     "--pipeline.model.num-downscales", "0",
     "--pipeline.model.camera-optimizer.mode", "SO3xR3",
     "--pipeline.model.rasterize-mode", "antialiased",
-    "--pipeline.model.densify-grad-thresh", "0.0004",
-    "--pipeline.model.cull-alpha-thresh", "0.005",
-    "--pipeline.model.cull-scale-thresh", "0.5",
-    "--pipeline.model.densify-size-thresh", "0.01",
+    "--pipeline.model.densify-grad-thresh", "0.0001",
+    "--pipeline.model.cull-alpha-thresh", "0.01",
+    "--pipeline.model.cull-scale-thresh", "0.2",
+    "--pipeline.model.densify-size-thresh", "0.005",
     "--pipeline.model.split-screen-size", "0.05",
-    "--pipeline.model.cull-screen-size", "0.15",
-    "--pipeline.model.stop-screen-size-at", "4000",
-    "--pipeline.model.stop-split-at", "15000",
+    "--pipeline.model.cull-screen-size", "0.08",
+    "--pipeline.model.stop-screen-size-at", "8000",
+    "--pipeline.model.stop-split-at", "20000",
     "--pipeline.model.warmup-length", "500",
     "--pipeline.model.refine-every", "100",
     "--pipeline.model.reset-alpha-every", "30",
