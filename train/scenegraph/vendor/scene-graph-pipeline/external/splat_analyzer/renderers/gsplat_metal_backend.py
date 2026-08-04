@@ -28,7 +28,7 @@ from gsplat.project_gaussians import project_gaussians
 from gsplat.rasterize import rasterize_gaussians
 from gsplat.sh import spherical_harmonics
 
-from .base import Renderer, NEAR_PLANE
+from .base import Renderer, NEAR_PLANE, ALPHA_EPS
 
 # Cull splats whose projected 3-sigma radius exceeds this fraction of the larger image
 # dimension. gsplat 1.5.3 tames huge 2D radii; this 0.1.x fork does not, so a few
@@ -111,7 +111,7 @@ class GsplatMetalRenderer(Renderer):
     def render_depth(self, g, w2c, K, width, height):
         fx, fy, cx, cy, tile_bounds = self._intrinsics(K, width, height)
         bg1 = torch.zeros(1, device=self.device)
-        out = []
+        out, out_alpha = [], []
         for bi in range(w2c.shape[0]):
             xys, depths, radii, conics, n_hit, _ = self._project(
                 g, w2c[bi], fx, fy, cx, cy, width, height, tile_bounds)
@@ -124,7 +124,8 @@ class GsplatMetalRenderer(Renderer):
             # #1: normalize by accumulated alpha → true expected depth (no shallow bias).
             dnum = dimg[..., 0]                          # (H,W)
             a = alpha.reshape(height, width)
-            depth = torch.where(a > 1e-6, dnum / a.clamp(min=1e-6),
+            depth = torch.where(a > ALPHA_EPS, dnum / a.clamp(min=ALPHA_EPS),
                                 torch.zeros_like(dnum))
             out.append(depth.detach().cpu().numpy().astype(np.float32))
-        return out
+            out_alpha.append(a.detach().cpu().numpy().astype(np.float32))
+        return out, out_alpha

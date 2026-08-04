@@ -22,6 +22,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 import imageio.v2 as imageio
@@ -245,25 +246,18 @@ def _lookat(eye: np.ndarray, target: np.ndarray, up: np.ndarray = None) -> np.nd
     """Build c2w in OpenCV convention (X right, Y down, Z forward into scene).
 
     `up` here is the WORLD's vertical axis reference (used only to fix the
-    camera's roll) — this project's splats are Z-up (confirmed directly:
-    this splat's Z span is 0.455 vs X/Y spans of ~2, and every other
-    pipeline in this project treats Z as vertical), not the Y-up this
-    function originally assumed.
+    camera's roll) — this project's splats are Z-up, not Y-up: this splat's
+    Z span is 0.455 against X/Y spans of ~2, and every other pipeline in the
+    project treats Z as vertical.
 
-    y = cross(z, x) is the standard OpenGL-style lookAt formula, where the
-    resulting "y" axis is meant to represent UP and points the same way as
-    the `up` reference you pass in. This codebase's convention is Y-DOWN
-    (per the docstring above), not Y-up — using that
-    formula's output AS "down in image" silently inverted every rendered
-    frame vertically. Confirmed directly: traced the actual camera math for
-    a real frame and found its local Y axis (documented to mean "down in
-    image") pointing at world-Z +0.985 — i.e. almost exactly toward true
-    world-up, the opposite of what "down" should point toward. This
-    produced a real, visually-confirmed upside-down render (ceiling
-    content appearing where floor content should, and vice versa) —
-    exactly what motivated the axis-direction fix, but the sign was still
-    wrong. y = cross(x, z) (swapped argument order, i.e. negated) gives the
-    correct Y-DOWN vector instead."""
+    Note the argument order. The standard OpenGL-style lookAt formula is
+    y = cross(z, x), whose "y" axis represents UP and points the same way as
+    the `up` reference passed in. This codebase's convention is Y-DOWN (per
+    the docstring above), so using that formula's output as "down in image"
+    inverts every rendered frame vertically — the frame's local Y ends up
+    pointing at world-Z +0.985, almost exactly toward true world-up, and the
+    render comes out with ceiling content where floor content belongs.
+    y = cross(x, z), the negated form, gives the correct Y-DOWN vector."""
     if up is None:
         up = np.array([0.0, 0.0, 1.0])
     z = target - eye
@@ -334,6 +328,22 @@ def _generate_camera_positions(means_np: np.ndarray, n_positions: int,
     if diag <= 0.0:
         diag = 1.0
 
+    # ── 1b. Restrict sampling height to a plausible viewing band ────────────
+    # These splats are Z-up. Sampling uniformly through the full bbox puts
+    # cameras above the ceiling and below the floor, where there is nothing to
+    # see and the reconstruction is weakest; both render as near-field haze.
+    sample_lo, sample_hi = lo.copy(), hi.copy()
+    if cfg.z_band_lo_frac is not None and cfg.z_band_hi_frac is not None:
+        z_span = hi[2] - lo[2]
+        sample_lo[2] = lo[2] + cfg.z_band_lo_frac * z_span
+        sample_hi[2] = lo[2] + cfg.z_band_hi_frac * z_span
+        print(f"[render] camera Z band: {sample_lo[2]:.3f} … {sample_hi[2]:.3f} "
+              f"(scene Z {lo[2]:.3f} … {hi[2]:.3f})")
+
+    # Absolute clearance every placement path must respect, including the
+    # relaxation rounds and the farthest-point fill below.
+    hard_min_dist = cfg.hard_min_surface_dist_frac * diag
+
     # ── 2. KDTree on a (possibly subsampled) point cloud ────────────────────
     if len(means_np) > _SUBSAMPLE_CAP:
         idx = rng.choice(len(means_np), _SUBSAMPLE_CAP, replace=False)
@@ -353,10 +363,14 @@ def _generate_camera_positions(means_np: np.ndarray, n_positions: int,
     # ── 3. Sample with density-weighted rejection + Poisson-disk spacing ────
     def sample_round(alpha, min_sep, min_surface_dist, eps=1e-9):
         r_min = min_sep * diag
+        # Never let a relaxation round drop below the absolute clearance —
+        # relaxing the SPACING between cameras is fine, relaxing the distance
+        # to the nearest surface is what buried them inside geometry.
+        min_surface_dist = max(min_surface_dist, hard_min_dist)
         accepted = []
         # Candidate pool, scored in one batched density call.
         M = max(40 * n_positions, 200)
-        cands = rng.uniform(lo, hi, size=(M, 3))
+        cands = rng.uniform(sample_lo, sample_hi, size=(M, 3))
         dens = density(cands)
         # Hard floor on distance to the single NEAREST point — the density
         # band-pass alone only rejects "buried" positions relative to the
@@ -404,8 +418,14 @@ def _generate_camera_positions(means_np: np.ndarray, n_positions: int,
                 accepted.append(c)
 
     # ── 5. Farthest-point fill (ignore density) to guarantee the count ──────
+    # Density is ignored here, but the hard clearance is NOT: this path used to
+    # append candidates with no distance test at all, which is how cameras ended
+    # up inside furniture on high --n_positions runs (where rounds 3-4 cannot
+    # place enough and this fill does most of the work).
     if len(accepted) < n_positions:
-        pool = rng.uniform(lo, hi, size=(max(40 * n_positions, 200), 3))
+        pool = rng.uniform(sample_lo, sample_hi, size=(max(80 * n_positions, 400), 3))
+        pool_nn, _ = tree.query(pool, k=1)
+        pool = pool[pool_nn >= hard_min_dist]
         while len(accepted) < n_positions and len(pool) > 0:
             if accepted:
                 d = np.min(
@@ -419,15 +439,36 @@ def _generate_camera_positions(means_np: np.ndarray, n_positions: int,
             pool = np.delete(pool, pick, axis=0)
 
     # ── 6. Absolute last resort: legacy circle ──────────────────────────────
+    # Also clearance-tested. A circle position that lands inside a wall is worse
+    # than no position at all.
     if len(accepted) < n_positions:
         center = means_np.mean(axis=0)
         radius = max(diag * 0.4, 0.5)
         print(f"[render] WARNING: density placement found only {len(accepted)}/"
-              f"{n_positions} positions — filling rest with legacy circle.")
+              f"{n_positions} positions — trying legacy circle for the rest.")
         for p in _legacy_circle_positions(center, radius, n_positions, cfg.seed):
             if len(accepted) >= n_positions:
                 break
-            accepted.append(np.asarray(p, dtype=np.float64))
+            p = np.asarray(p, dtype=np.float64)
+            if tree.query(p, k=1)[0] >= hard_min_dist:
+                accepted.append(p)
+
+    # Placing FEWER cameras is strictly better than placing them inside
+    # geometry: a buried camera does not merely waste its own frames, it feeds
+    # OWLv2 near-field blur that it reliably hallucinates objects out of, and
+    # those false positives then have to be filtered back out in 3D where they
+    # are much harder to tell from real ones.
+    if len(accepted) < n_positions:
+        print(f"[render] NOTE: placed {len(accepted)}/{n_positions} camera positions — "
+              f"the rest could not clear the {hard_min_dist:.4f} minimum surface "
+              f"distance. Proceeding with {len(accepted)}; lower "
+              f"--hard_min_surface_dist_frac or reduce --n_positions to change this.")
+    if not accepted:
+        raise RuntimeError(
+            f"No camera position could clear the minimum surface distance "
+            f"({hard_min_dist:.4f} native units). The scene may be smaller than "
+            f"expected or entirely filled with geometry — lower "
+            f"--hard_min_surface_dist_frac.")
 
     positions = np.asarray(accepted[:n_positions], dtype=np.float32)
 
@@ -450,12 +491,11 @@ def _build_poses(positions: list, n_azimuth: int, n_elevation: int,
 
     look_dir's Z component is sin(elevation) — elevation tilts toward this
     splat's real vertical axis (Z), with azimuth sweeping the X,Y horizontal
-    plane. This was originally sin(elevation) on Y (a horizontal room axis
-    for this project's Z-up splats, confirmed directly — see _lookat) i.e.
-    "elevation" was tilting toward a wall, not the ceiling/floor. el_max
-    raised from 40 to 75 on top of the axis fix — even correctly aimed at
-    Z, 40 degrees isn't steep enough to frame a ceiling light nearly
-    directly overhead from a camera position below it.
+    plane. Putting sin(elevation) on Y instead tilts toward a horizontal room
+    axis for these Z-up splats (see _lookat) — that is, toward a wall rather
+    than the ceiling or floor. el_max is 75 rather than 40 because even
+    correctly aimed at Z, 40 degrees is not steep enough to frame a ceiling
+    light nearly directly overhead from a camera below it.
     """
     all_poses = []
     position_indices = []
@@ -496,12 +536,50 @@ def _depth_to_vis(depth_map: np.ndarray) -> np.ndarray:
     return (255 * (1.0 - d_norm)).astype(np.uint8)
 
 
-def _write_frame(frames_dir: Path, idx: int,
-                 rgb: np.ndarray, depth_m: np.ndarray, depth_vis: np.ndarray):
-    """Write one frame's RGB PNG, raw depth NPY, and colorized depth PNG. Runs in a thread."""
+def _write_frame(frames_dir: Path, idx: int, rgb: np.ndarray,
+                 depth_m: np.ndarray, depth_vis: np.ndarray, alpha: np.ndarray):
+    """Write one frame's RGB PNG, raw depth NPY, colorized depth PNG, and the
+    accumulated-alpha NPY. Runs in a thread."""
     imageio.imwrite(str(frames_dir / f"frame_{idx:04d}.png"), rgb)
     np.save(str(frames_dir / f"depth_{idx:04d}.npy"), depth_m)
     imageio.imwrite(str(frames_dir / f"depth_{idx:04d}.png"), depth_vis)
+    # Alpha is what tells the detector whether a pixel is real reconstructed
+    # surface or empty space it should not be finding objects in. Stored as
+    # float16 — it is only ever thresholded, and this halves the disk cost of
+    # carrying it.
+    np.save(str(frames_dir / f"alpha_{idx:04d}.npy"), alpha.astype(np.float16))
+
+
+def _frame_quality(rgb: np.ndarray, depth_m: np.ndarray, alpha: np.ndarray,
+                   alpha_thresh: float) -> dict:
+    """Cheap per-frame render-quality descriptors, computed at render time and
+    stored in transforms.json so the detection stage can gate on them without
+    re-reading every frame.
+
+    `sharpness` is the variance of the Laplacian of the greyscale image — the
+    standard blur metric. A splat rendered from a viewpoint far from any
+    training camera reconstructs as a low-frequency smear, which scores near
+    zero here and which OWLv2 reliably hallucinates furniture out of.
+
+    It is measured on a fixed 512x512 downsample rather than at native
+    resolution, because Laplacian variance is strongly resolution- and
+    FoV-dependent: the same view rendered at 896px/90° scores roughly an order
+    of magnitude lower than at 512px/130°, since the same scene detail is
+    spread over more pixels and each one's local gradient shrinks. Pinning the
+    measurement to a reference size keeps the number comparable across
+    render settings — without it, changing --width silently changes what the
+    quality gate means.
+    """
+    g = rgb.astype(np.float32) @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    ref = cv2.resize(g, (512, 512), interpolation=cv2.INTER_AREA) if g.shape != (512, 512) else g
+    lap = cv2.Laplacian(ref, cv2.CV_32F)
+    valid = depth_m[depth_m > 0.01]
+    return {
+        "sharpness":     float(lap.var()),
+        "alpha_frac":    float((alpha > alpha_thresh).mean()),
+        "median_depth":  float(np.median(valid)) if valid.size else 0.0,
+        "valid_depth_frac": float((depth_m > 0.01).mean()),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -544,8 +622,8 @@ def render_views(ply_path: str, job_dir: str, cfg: PipelineConfig | None = None)
     center, radius = _scene_bounds(means_np)
     print(f"[render] Scene center={center.round(3)}, radius={radius:.3f}")
 
-    # Camera intrinsics — 130° horizontal FoV
-    fov_x = math.radians(130.0)
+    # Camera intrinsics — horizontal FoV from cfg.
+    fov_x = math.radians(cfg.fov_deg)
     fl_x = width / (2.0 * math.tan(fov_x / 2.0))
     fl_y = fl_x
     cx, cy = width / 2.0, height / 2.0
@@ -558,18 +636,27 @@ def render_views(ply_path: str, job_dir: str, cfg: PipelineConfig | None = None)
     cam_positions, look_targets = _generate_camera_positions(means_np, n_positions, cfg)
     poses, position_indices = _build_poses(cam_positions, n_azimuth, n_elevation)
     total = len(poses)
-    print(f"[render] {n_positions} positions × {n_azimuth} azimuth × {n_elevation} elevation = {total} views"
-          f"  (batch={RENDER_BATCH}, io_workers={IO_WORKERS}, device={device})")
+    print(f"[render] {len(cam_positions)} positions × {n_azimuth} azimuth × {n_elevation} elevation = {total} views"
+          f"  ({width}×{height} @ {cfg.fov_deg:.0f}° FoV, batch={RENDER_BATCH}, "
+          f"io_workers={IO_WORKERS}, device={device})")
 
     # Build all w2c matrices on GPU in one shot — avoids per-frame tensor creation
     all_c2w = torch.tensor(np.stack(poses), device=device, dtype=torch.float32)  # (T, 4, 4)
     all_w2c = torch.linalg.inv(all_c2w)                                           # (T, 4, 4)
 
+    # Robust bbox diagonal — the scale the frame-quality depth gate is expressed
+    # against, recomputed here so it matches what camera placement used.
+    _blo = np.percentile(means_np, cfg.bbox_pct_lo, axis=0)
+    _bhi = np.percentile(means_np, cfg.bbox_pct_hi, axis=0)
+    bbox_diag = float(np.linalg.norm(_bhi - _blo)) or 1.0
+
     transforms = {
         "fl_x": fl_x, "fl_y": fl_y, "cx": cx, "cy": cy,
         "w": width, "h": height,
+        "fov_deg": float(cfg.fov_deg),
         "scene_center": center.tolist(),
         "scene_radius": float(radius),
+        "bbox_diag": bbox_diag,
         "camera_positions": [p.tolist() for p in cam_positions],
         "look_targets": [t.tolist() for t in look_targets],
         "frames": [],
@@ -587,20 +674,23 @@ def render_views(ply_path: str, job_dir: str, cfg: PipelineConfig | None = None)
 
             # Backend renders this batch to RGB + per-view depth. Same contract
             # whether gsplat (CUDA) or gsplat-metal (Apple MPS).
-            rgb_cpu   = renderer.render_rgb(g, w2c_batch, K, width, height)    # (B,H,W,3) uint8
-            depth_cpu = renderer.render_depth(g, w2c_batch, K, width, height)  # list of (H,W) f32
+            rgb_cpu = renderer.render_rgb(g, w2c_batch, K, width, height)    # (B,H,W,3) uint8
+            depth_cpu, alpha_cpu = renderer.render_depth(g, w2c_batch, K, width, height)
 
             # ── Submit I/O to thread pool (overlaps with next GPU batch) ───────
             for bi, idx in enumerate(range(b0, b1)):
                 futures.append(pool.submit(
                     _write_frame, frames_dir, idx,
-                    rgb_cpu[bi], depth_cpu[bi], _depth_to_vis(depth_cpu[bi]),
+                    rgb_cpu[bi], depth_cpu[bi], _depth_to_vis(depth_cpu[bi]), alpha_cpu[bi],
                 ))
                 transforms["frames"].append({
                     "file_path":        f"frames/frame_{idx:04d}.png",
                     "depth_path":       f"frames/depth_{idx:04d}.png",
+                    "alpha_path":       f"frames/alpha_{idx:04d}.npy",
                     "transform_matrix": poses[idx].tolist(),
                     "position_idx":     int(position_indices[idx]),
+                    "quality":          _frame_quality(rgb_cpu[bi], depth_cpu[bi],
+                                                       alpha_cpu[bi], cfg.frame_alpha_thresh),
                 })
 
         # Drain futures — re-raises any disk write errors
@@ -611,7 +701,15 @@ def render_views(ply_path: str, job_dir: str, cfg: PipelineConfig | None = None)
     with open(transforms_path, "w") as f:
         json.dump(transforms, f, indent=2)
 
-    print(f"[render] Done. Wrote {total} RGB + depth frames + transforms.json")
+    q = [f["quality"] for f in transforms["frames"]]
+    sh = np.array([x["sharpness"] for x in q])
+    md = np.array([x["median_depth"] for x in q])
+    vd = np.array([x["valid_depth_frac"] for x in q])
+    print(f"[render] Done. Wrote {total} RGB + depth + alpha frames + transforms.json")
+    print(f"[render] quality: sharpness p25/p50/p95 = "
+          f"{np.percentile(sh,25):.1f}/{np.percentile(sh,50):.1f}/{np.percentile(sh,95):.1f}  |  "
+          f"median-depth p25/p50 = {np.percentile(md,25):.4f}/{np.percentile(md,50):.4f}  |  "
+          f"mean valid-depth frac = {vd.mean():.3f}")
     return str(transforms_path)
 
 

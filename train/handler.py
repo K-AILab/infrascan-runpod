@@ -39,10 +39,10 @@ PY = sys.executable
 # Scene-graph stage (Approach A) runs inline after training on the same warm
 # worker. It lives in its own venv (open3d + open_clip + boto3) inside the image.
 SG_DIR = Path("/app/train/scenegraph")
-PY_SG = os.environ.get("PY_MAIN", "/opt/venv-main/bin/python")
+PY_SG = os.environ.get("PY_SG", "/opt/venv-sg/bin/python")
 
 # Bump on every image change so the endpoint's returned build can be identified.
-HANDLER_VERSION = "2026-08-03-scenegraph-merge"
+HANDLER_VERSION = "2026-08-04-scenegraph-upstream-e4d9409"
 
 # abai's proven splatfacto recipe (shinhan-pz000-hires-30k / factory13 depthsup)
 MODEL_ARGS = [
@@ -133,6 +133,21 @@ def _measure_depth_scale(ds: Path, probe_dir: Path) -> float:
     return scale
 
 
+def _sg_extra_args(inp):
+    """Optional per-job scene-graph knobs, passed through to run_scenegraph.py.
+    All optional; omit for the documented defaults (yaw=0, surface=table)."""
+    extra = []
+    for key, flag in (("yaw_deg", "--yaw-deg"), ("surface_label", "--surface-label"),
+                      ("max_long_m", "--max-long-m"), ("drop_labels", "--drop-labels")):
+        if inp.get(key) is not None:
+            extra += [flag, str(inp[key])]
+    if inp.get("skip_masks"):
+        extra.append("--skip-masks")
+    if inp.get("skip_verify"):
+        extra.append("--skip-verify")
+    return extra
+
+
 def handler(job):
     inp = job.get("input", {}) or {}
     slug = inp.get("slug")
@@ -153,7 +168,8 @@ def handler(job):
                  "--splat", src / "splat.ply", "--pointcloud", src / "pointcloud.ply",
                  "--cameras", src / "cameras.json",
                  "--intrinsics", src / "intrinsics.json",
-                 "--views", src / "views", "--workdir", root / "sg", "--bucket", BUCKET])
+                 "--views", src / "views", "--workdir", root / "sg", "--bucket", BUCKET]
+                + _sg_extra_args(inp))
             return {"slug": slug, "only_scenegraph": True, "has_scene_graph": True,
                     "handler_version": HANDLER_VERSION}
         except subprocess.CalledProcessError as e:
@@ -239,7 +255,8 @@ def handler(job):
                  "--cameras", src / "cameras.json",
                  "--intrinsics", src / "intrinsics.json",
                  "--views", src / "views", "--workdir", root / "sg",
-                 "--bucket", BUCKET])
+                 "--bucket", BUCKET]
+                + _sg_extra_args(inp))
             has_scene_graph = True
             print(f"[train] uploaded scans/{slug}/scene_graph.json", flush=True)
         except Exception as e:

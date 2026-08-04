@@ -1,14 +1,16 @@
 """Bake the model weights into the image so the first (and every) job runs
-offline — no HuggingFace fetch at job time.
+offline — no HuggingFace/ultralytics fetch at job time.
 
-Run once per venv at build:
-    /opt/venv-splat/bin/python prefetch_weights.py owlv2   # transformers OWLv2
-    /opt/venv-main/bin/python  prefetch_weights.py clip    # open_clip ViT-H-14/dfn5b
+Run at build under the one combined venv:
+    /opt/venv-sg/bin/python prefetch_weights.py owlv2   # transformers OWLv2
+    /opt/venv-sg/bin/python prefetch_weights.py clip    # open_clip ViT-H-14/dfn5b
+    cd <vendored repo> && /opt/venv-sg/bin/python prefetch_weights.py sam  # mobile_sam.pt
 
 These are the exact model ids the vendored pipeline loads
-(external/splat_analyzer/pipeline.py, pipeline2b/clip_utils.py). Downloads land
-in HF_HOME / the open_clip cache, both pointed at a baked location by the
-Dockerfile.
+(external/splat_analyzer/pipeline.py, pipeline2b/clip_utils.py,
+pipeline9/refit_box_from_masks.py). OWLv2/CLIP land in HF_HOME / the open_clip
+cache; `sam` downloads mobile_sam.pt into the CURRENT directory (run it from the
+vendored repo root, where refit_box_from_masks.py loads it by relative name).
 """
 import sys
 
@@ -33,11 +35,21 @@ def prefetch_clip() -> None:
     print("[prefetch] CLIP cached", flush=True)
 
 
+def prefetch_sam() -> None:
+    # ultralytics downloads mobile_sam.pt into the CWD on first construction.
+    from ultralytics import SAM
+    print("[prefetch] SAM mobile_sam.pt ...", flush=True)
+    SAM("mobile_sam.pt")
+    print("[prefetch] SAM cached", flush=True)
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else ""
     if which == "owlv2":
         prefetch_owlv2()
     elif which == "clip":
         prefetch_clip()
+    elif which == "sam":
+        prefetch_sam()
     else:
-        sys.exit("usage: prefetch_weights.py owlv2|clip")
+        sys.exit("usage: prefetch_weights.py owlv2|clip|sam")

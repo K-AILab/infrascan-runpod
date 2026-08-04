@@ -73,12 +73,170 @@ def _pixel_size_to_world(w_px, h_px, depth, fl_x, fl_y):
     return world_w, world_h
 
 
+def _world_axis_extent(w_px, h_px, depth, fl_x, fl_y, c2w, depth_extent=None):
+    """Convert a 2-D box's pixel extent into a WORLD-AXIS-ALIGNED (x, y, z) size.
+
+    `_pixel_size_to_world` returns extents along the CAMERA's own image axes —
+    "width" is along the camera's right vector, "height" along its down vector.
+    Writing those straight into `scale = [x, y, z]` as world XYZ is only correct
+    for a camera that happens to be axis-aligned. For a camera looking along +X,
+    its image width lies along world Y and its image height along world Z, so the
+    object's width would be recorded as an X extent. Since the pipeline sweeps a
+    full panorama from every position, each detection is mis-assigned a different
+    way and the per-cluster median across viewpoints averages the error instead of
+    cancelling it — which is what makes box sizes not match the real object.
+
+    The correct conversion projects the camera-frame extent vector onto the
+    world axes. Taking |·| of the rotated basis vectors gives the axis-aligned
+    bounding box of the (rotated) camera-frame box, which is the tightest
+    world-axis-aligned box that still contains it.
+
+    `depth_extent` is the object's thickness ALONG the view ray. A single view
+    genuinely cannot observe it, so when it is unknown the smaller of the two
+    measured extents is used rather than their mean: assuming an object is at
+    least as deep as it is wide systematically inflates every box, and the
+    cluster stage's `max_object_diag` check then rejects real large furniture.
+    """
+    ex_cam = (w_px / fl_x) * depth      # along camera right (+X_cam)
+    ey_cam = (h_px / fl_y) * depth      # along camera down  (+Y_cam)
+    ez_cam = depth_extent if depth_extent is not None else min(ex_cam, ey_cam)
+
+    R = c2w[:3, :3]                     # camera axes expressed in world coords
+    extent = (np.abs(R[:, 0]) * ex_cam
+              + np.abs(R[:, 1]) * ey_cam
+              + np.abs(R[:, 2]) * ez_cam)
+    return extent                       # (3,) world-axis-aligned size
+
+
+def _foreground_depth(depth_map, alpha_map, box_2d, alpha_thresh=0.5,
+                      fg_pct=25.0, min_valid_px=12):
+    """Estimate the depth of the OBJECT inside a 2-D box.
+
+    The previous approach sampled a 5x5 patch at the box CENTRE. For most real
+    furniture the box centre is not on the object: it is the gap between a
+    chair's legs, the space under a table, or the opening of a shelf — so the
+    sampled depth is the wall metres behind, and the detection gets lifted to a
+    position well beyond the object it came from.
+
+    Instead, take a low percentile of the valid depths across the box interior.
+    The object that caused the detection is by definition the nearest
+    substantial surface in that region, so the foreground sits in the low tail
+    of the box's depth distribution while background occupies the high tail.
+    A percentile (not the minimum) keeps this robust to a few stray near-camera
+    floaters.
+
+    Pixels are additionally required to have accumulated alpha above
+    `alpha_thresh`: a low-alpha pixel is semi-transparent haze rather than
+    reconstructed surface, and its depth — even correctly alpha-normalized — is
+    an average over whatever sparse Gaussians happen to lie along the ray.
+
+    Returns (depth, n_valid, coverage_frac). `depth` is 0.0 when the box has no
+    usable surface in it at all, which is the caller's signal that the
+    detection is on empty space and should be dropped rather than placed at a
+    fabricated fallback distance.
+    """
+    H, W = depth_map.shape
+    x1, y1, x2, y2 = box_2d
+    # Shrink 15% toward the centre: OWLv2 boxes routinely include a margin of
+    # background, and the border ring is where it lives.
+    mx, my = 0.15 * (x2 - x1), 0.15 * (y2 - y1)
+    ix0 = int(np.clip(np.floor(x1 + mx), 0, W - 1))
+    ix1 = int(np.clip(np.ceil(x2 - mx), 1, W))
+    iy0 = int(np.clip(np.floor(y1 + my), 0, H - 1))
+    iy1 = int(np.clip(np.ceil(y2 - my), 1, H))
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0, 0, 0.0
+
+    d = depth_map[iy0:iy1, ix0:ix1]
+    ok = d > 0.01
+    if alpha_map is not None:
+        ok &= alpha_map[iy0:iy1, ix0:ix1] > alpha_thresh
+
+    n_valid = int(ok.sum())
+    coverage = n_valid / float(d.size)
+    if n_valid < min_valid_px:
+        return 0.0, n_valid, coverage
+    return float(np.percentile(d[ok], fg_pct)), n_valid, coverage
+
+
+def _box_depth_extent(depth_map, alpha_map, box_2d, alpha_thresh=0.5,
+                      lo_pct=10.0, hi_pct=85.0, min_valid_px=12):
+    """Measure an object's thickness ALONG the view ray from the spread of the
+    depths inside its 2-D box.
+
+    A single view cannot observe the far side of an object, so this is a lower
+    bound, not a true depth — but it is a MEASUREMENT rather than the previous
+    `(world_w + world_h) / 2` guess, which had no relationship to the scene at
+    all. The upper percentile is capped well below 100 so that background
+    visible past the object's silhouette (through a chair's legs, over a
+    desk's edge) does not stretch the extent out to the far wall.
+
+    Returns None when the box has too little surface to measure, letting
+    `_world_axis_extent` fall back to its own conservative estimate.
+    """
+    H, W = depth_map.shape
+    x1, y1, x2, y2 = box_2d
+    ix0 = int(np.clip(np.floor(x1), 0, W - 1)); ix1 = int(np.clip(np.ceil(x2), 1, W))
+    iy0 = int(np.clip(np.floor(y1), 0, H - 1)); iy1 = int(np.clip(np.ceil(y2), 1, H))
+    if ix1 <= ix0 or iy1 <= iy0:
+        return None
+    d = depth_map[iy0:iy1, ix0:ix1]
+    ok = d > 0.01
+    if alpha_map is not None:
+        ok &= alpha_map[iy0:iy1, ix0:ix1] > alpha_thresh
+    if int(ok.sum()) < min_valid_px:
+        return None
+    vals = d[ok]
+    lo, hi = np.percentile(vals, [lo_pct, hi_pct])
+    return float(max(hi - lo, 0.0)) or None
+
+
+def _sharpness_cut(transforms, cfg):
+    """Resolve the run-relative sharpness threshold.
+
+    Sharpness is gated relatively (bottom N% of THIS run's frames) rather than
+    against a constant, because the metric's absolute level depends on
+    resolution, FoV and how textured the scene is — see
+    PipelineConfig.frame_sharpness_pct.
+    """
+    vals = [f["quality"]["sharpness"] for f in transforms["frames"]
+            if f.get("quality") is not None]
+    cut = 0.0
+    if vals and cfg.frame_sharpness_pct:
+        cut = float(np.percentile(vals, cfg.frame_sharpness_pct))
+    if cfg.min_frame_sharpness is not None:
+        cut = max(cut, cfg.min_frame_sharpness)
+    if vals:
+        print(f"[pipeline] sharpness: p5/p50/p95 = {np.percentile(vals,5):.1f}/"
+              f"{np.percentile(vals,50):.1f}/{np.percentile(vals,95):.1f}  "
+              f"-> cut at {cut:.1f} (bottom {cfg.frame_sharpness_pct:.0f}%)")
+    return cut
+
+
+def _frame_passes_gate(fq, cfg, bbox_diag, sharpness_cut):
+    """True if a rendered frame is good enough to run detection on.
+
+    Returns (ok, reason). See PipelineConfig's frame-quality-gate block for why
+    each threshold exists and how it was calibrated.
+    """
+    if fq is None:
+        return True, ""                      # older transforms.json, no metrics
+    if fq["sharpness"] < sharpness_cut:
+        return False, f"blur(sharp={fq['sharpness']:.1f})"
+    if fq["alpha_frac"] < cfg.min_frame_alpha_frac:
+        return False, f"empty(alpha_frac={fq['alpha_frac']:.2f})"
+    if fq["median_depth"] < cfg.min_frame_median_depth_frac * bbox_diag:
+        return False, f"buried(med_depth={fq['median_depth']:.4f})"
+    return True, ""
+
+
 HEIGHT_EXEMPT_LABELS = {"light", "window"}   # legitimately can sit near ceiling height
 
 
 def _cluster_detections(detections, eps_m=0.5, max_per_label=3,
                         min_votes=8, min_peak_score=0.35, max_object_diag=None,
-                        max_height_z=None, min_height_z_light=None, label_overrides=None):
+                        max_height_z=None, min_height_z_light=None, label_overrides=None,
+                        label_eps_scale=None, min_object_extent=0.01):
     """
     Anchor-based greedy clustering with false-positive suppression.
 
@@ -90,17 +248,16 @@ def _cluster_detections(detections, eps_m=0.5, max_per_label=3,
     max_object_diag drops any raw detection whose OWN implied real-world size
     is already implausible for furniture BEFORE it can seed or vote into a
     cluster, plus a second check on the final cluster scale as a safety net.
-    Confirmed necessary directly: a single OWLv2 box that mis-reads a large
+    The size cap matters because a single OWLv2 box that mis-reads a large
     blurry region as "door"/"window"/"cabinet" converts, via pixel-size-at-
-    depth, into a real-world box several meters across — with nothing
-    previously catching it, some final clusters spanned most of the room.
+    depth, into a real-world box several metres across. Unchecked, such
+    clusters end up spanning most of the room.
 
     max_height_z drops any raw detection above this world-Z whose label isn't
-    in HEIGHT_EXEMPT_LABELS. Confirmed directly on a real run: with enough
-    camera coverage, "table" detections split cleanly by height — most near
-    ceiling height (matching where "light" clusters — OWLv2 confusing some
-    ceiling-height content for a tabletop), a minority at real desk height.
-    Not random noise, a specific and filterable confusion.
+    in HEIGHT_EXEMPT_LABELS. With enough camera coverage, "table" detections
+    split cleanly by height: most near ceiling height, right where "light"
+    clusters (OWLv2 reading ceiling content as a tabletop), and a minority at
+    real desk height. That is a specific, filterable confusion, not noise.
 
     min_height_z_light drops any "light" detection BELOW this world-Z.
     Exempting "light" from max_height_z (it can legitimately be near
@@ -115,6 +272,13 @@ def _cluster_detections(detections, eps_m=0.5, max_per_label=3,
     candidate for one label (even ones likely to be false positives)
     without touching another label's already-good result. Global
     min_votes/min_peak_score still apply to any label not listed here.
+
+    label_eps_scale: optional {label: multiplier} on the merge radius `eps_m`.
+    A single radius shared by every label is a physical-size prior that is
+    wrong for all but one of them — see PipelineConfig.cluster_eps_frac for the
+    measurement, and GaussianDet3D's NMS-threshold ablation for the same effect
+    quantified on a benchmark (over-wide spatial suppression costs small
+    objects almost exclusively).
     """
     if max_object_diag is not None:
         detections = [d for d in detections if float(np.linalg.norm(d["scale"])) <= max_object_diag]
@@ -130,6 +294,7 @@ def _cluster_detections(detections, eps_m=0.5, max_per_label=3,
 
     results = []
     for label, dets in by_label.items():
+        lbl_eps = eps_m * float((label_eps_scale or {}).get(label, 1.0))
         dets = sorted(dets, key=lambda d: d["score"], reverse=True)
         positions = np.array([d["position"] for d in dets])
         scales    = np.array([d["scale"]    for d in dets])
@@ -145,7 +310,7 @@ def _cluster_detections(detections, eps_m=0.5, max_per_label=3,
             anchor = positions[i].copy()
             cluster_idx = [i]
             for j in range(i + 1, len(dets)):
-                if not used[j] and np.linalg.norm(anchor - positions[j]) < eps_m:
+                if not used[j] and np.linalg.norm(anchor - positions[j]) < lbl_eps:
                     cluster_idx.append(j)
             for j in cluster_idx:
                 used[j] = True
@@ -163,7 +328,12 @@ def _cluster_detections(detections, eps_m=0.5, max_per_label=3,
 
             cluster_pos   = (positions[cluster_idx] * scores[cluster_idx, None]).sum(0) / scores[cluster_idx].sum()
             cluster_scale = np.median(scales[cluster_idx], axis=0)
-            cluster_scale = np.maximum(cluster_scale, 0.1)
+            # Degeneracy guard only — keep it far below any real object size.
+            # At 0.1 native units (~0.68 m per axis here) it stops being a
+            # floor and becomes a minimum object size larger than much of what
+            # is being detected: it pins every "light" cluster to exactly the
+            # clamp value and drags the scene's median z-extent with it.
+            cluster_scale = np.maximum(cluster_scale, min_object_extent)
             if max_object_diag is not None and float(np.linalg.norm(cluster_scale)) > max_object_diag:
                 continue
             # Carry the raw member dicts so callers can trace back to source frames
@@ -181,19 +351,16 @@ def _cluster_detections(detections, eps_m=0.5, max_per_label=3,
 def _dedup_cross_label(results, overlap_frac=0.3):
     """
     Suppresses one of a pair of DIFFERENT-label detections when their 3D
-    boxes substantially overlap. Confirmed directly on real data: several
-    "table" and "chair" clusters overlapped 57-79% of the smaller box's
-    volume — not genuinely adjacent furniture (a chair pulled up to a
-    desk), but the SAME physical object (an integrated desk+chair unit,
-    visible in the real room photos) detected and kept under two
-    competing labels. Keeps whichever has the higher peak score.
+    boxes substantially overlap. "table" and "chair" clusters overlapping
+    57-79% of the smaller box's volume are not adjacent furniture (a chair
+    pulled up to a desk) but one physical object — an integrated desk+chair
+    unit — kept under two competing labels. Whichever has the higher peak
+    score survives.
 
-    Default lowered from 0.5 to 0.3 after a second confirmed real case: a
-    "door" detection was actually looking at a real plant (visually
-    verified by cropping the source frame) but its box was badly
-    oversized relative to the real object — only 31% overlap with the
-    correctly-sized "plant" box, below the original 0.5 cutoff, so it
-    survived dedup and showed up as a wrong, redundant label right next
+    The 0.3 default rather than 0.5 also covers the case where the redundant
+    box is badly oversized: a "door" detection actually looking at a plant
+    reached only 31% overlap with the correctly sized "plant" box, so at a
+    0.5 cutoff it survived dedup and appeared as a wrong, redundant label
     to the correct one. (Tried a "does one box's center fall inside the
     other" check as an alternative/additional signal first — didn't
     actually catch this specific case, since the two boxes overlap on a
@@ -238,12 +405,15 @@ def _dedup_cross_label(results, overlap_frac=0.3):
 # ---------------------------------------------------------------------------
 
 def _run_owlv2(frames_dir: Path, labels: list[str], transforms: dict, scene_radius: float,
-               score_threshold: float = 0.12):
+               score_threshold: float = 0.12, cfg: "PipelineConfig | None" = None):
     """
-    Run OWLv2 on all rendered frames.
-    Uses per-pixel depth maps (depth_XXXX.npy) for accurate 3D back-projection.
-    Falls back to scene_radius if a depth file is missing or the sampled depth is zero.
+    Run OWLv2 on the rendered frames that pass the render-quality gate.
+
+    Uses per-pixel depth + alpha maps for 3D back-projection. A detection whose
+    box contains no reconstructed surface is DROPPED rather than placed at a
+    fabricated fallback depth — see `_foreground_depth`.
     """
+    cfg = cfg or PipelineConfig()
     device = _select_device()
     print(f"[pipeline] Loading OWLv2 on {device} …")
     processor = Owlv2Processor.from_pretrained("google/owlv2-base-patch16-ensemble")
@@ -264,27 +434,46 @@ def _run_owlv2(frames_dir: Path, labels: list[str], transforms: dict, scene_radi
 
     raw_detections = []
 
-    scene_center  = np.array(transforms.get("scene_center", [0.0, 0.0, 0.0]))
-    stored_radius = transforms.get("scene_radius", scene_radius)
+    bbox_diag = float(transforms.get("bbox_diag", scene_radius * 2.0))
+
+    n_gated, gate_reasons = 0, defaultdict(int)
+    n_no_surface = 0
+    sharpness_cut = _sharpness_cut(transforms, cfg) if cfg.frame_gate else 0.0
 
     for frame_idx, frame_meta in enumerate(transforms["frames"]):
         frame_path = frames_dir.parent / frame_meta["file_path"]
         if not frame_path.exists():
             continue
 
+        # ── Render-quality gate ────────────────────────────────────────────
+        if cfg.frame_gate:
+            ok, reason = _frame_passes_gate(frame_meta.get("quality"), cfg,
+                                            bbox_diag, sharpness_cut)
+            if not ok:
+                n_gated += 1
+                gate_reasons[reason.split("(")[0]] += 1
+                continue
+
         c2w = np.array(frame_meta["transform_matrix"], dtype=np.float64)
 
-        # Fallback depth: distance from camera to scene centre (or scene_radius)
-        cam_pos = c2w[:3, 3]
-        cam_to_center = np.linalg.norm(cam_pos - scene_center)
-        fallback_depth = cam_to_center if cam_to_center > stored_radius * 0.3 else stored_radius
-
-        # Load per-pixel depth map if available
+        # Load per-pixel depth + alpha maps
         depth_npy_path = (frames_dir.parent /
                           frame_meta.get("depth_path", "").replace(".png", ".npy"))
         depth_map = None
         if depth_npy_path.exists():
             depth_map = np.load(str(depth_npy_path)).astype(np.float64)
+        if depth_map is None:
+            # Without depth there is no way to place a detection in 3D except by
+            # inventing a distance, which is what produced boxes floating in
+            # empty space. Skip the frame instead.
+            n_gated += 1
+            gate_reasons["no-depth"] += 1
+            continue
+
+        alpha_map = None
+        alpha_rel = frame_meta.get("alpha_path")
+        if alpha_rel and (frames_dir.parent / alpha_rel).exists():
+            alpha_map = np.load(str(frames_dir.parent / alpha_rel)).astype(np.float64)
 
         image  = Image.open(frame_path).convert("RGB")
         inputs = processor(text=texts, images=image, return_tensors="pt")
@@ -305,38 +494,54 @@ def _run_owlv2(frames_dir: Path, labels: list[str], transforms: dict, scene_radi
         for box, score, lid in zip(boxes, scores, label_ids):
             label = labels[lid].strip()
             bx1, by1, bx2, by2 = box          # original pixel coords (kept for box_2d)
-            cx_px = int(np.clip((bx1 + bx2) / 2, 0, W - 1))
-            cy_px = int(np.clip((by1 + by2) / 2, 0, H - 1))
 
-            # Sample depth from a 5×5 patch around the box centre and take the
-            # median of valid (non-zero) pixels — more robust than a single pixel.
-            if depth_map is not None:
-                h5, w5 = depth_map.shape
-                py0 = max(0, cy_px - 2); py1 = min(h5, cy_px + 3)
-                px0 = max(0, cx_px - 2); px1 = min(w5, cx_px + 3)
-                patch = depth_map[py0:py1, px0:px1].ravel()
-                valid = patch[patch > 0.01]
-                sampled = float(np.median(valid)) if valid.size > 0 else 0.0
-                box_depth = sampled if sampled > 0.01 else fallback_depth
-            else:
-                box_depth = fallback_depth
+            # Depth of the OBJECT in this box, from the foreground of the box's
+            # own depth distribution — not the box centre, which is frequently
+            # background seen between/under the object.
+            box_depth, n_valid, coverage = _foreground_depth(
+                depth_map, alpha_map, box,
+                alpha_thresh=cfg.frame_alpha_thresh,
+                fg_pct=cfg.fg_depth_pct,
+                min_valid_px=cfg.min_box_surface_px,
+            )
+            if box_depth <= 0.01 or coverage < cfg.min_box_surface_frac:
+                # No reconstructed surface inside the box. This IS the
+                # "detected an empty space" case, and it is only detectable
+                # here — once lifted to 3D at a guessed distance it becomes
+                # indistinguishable from a real detection.
+                n_no_surface += 1
+                continue
 
             world_pos, (w_px, h_px) = _unproject_box(box, box_depth, K_inv, c2w)
-            world_w, world_h = _pixel_size_to_world(w_px, h_px, box_depth, fl_x, fl_y)
-            world_d = (world_w + world_h) / 2.0
+            # Depth extent along the view ray, measured from the spread of the
+            # box's own depths rather than assumed from its pixel size.
+            d_extent = _box_depth_extent(depth_map, alpha_map, box,
+                                         cfg.frame_alpha_thresh)
+            scale = _world_axis_extent(w_px, h_px, box_depth, fl_x, fl_y, c2w,
+                                       depth_extent=d_extent)
 
             raw_detections.append({
                 "label":     label,
                 "score":     float(score),
                 "position":  world_pos,
-                "scale":     np.array([world_w, world_h, world_d]),
+                "scale":     scale,
                 "frame_idx": frame_idx,
                 "box_2d":    [float(bx1), float(by1), float(bx2), float(by2)],
+                "coverage":  coverage,
             })
-            print(f"  [detect] {label} ({score:.2f}) depth={box_depth:.2f} "
-                  f"@ {world_pos.round(3)} {frame_path.name}")
+            print(f"  [detect] {label} ({score:.2f}) depth={box_depth:.3f} "
+                  f"cov={coverage:.2f} @ {world_pos.round(3)} {frame_path.name}")
 
-    return raw_detections
+    n_frames = len(transforms["frames"])
+    if n_gated:
+        detail = ", ".join(f"{k}={v}" for k, v in sorted(gate_reasons.items()))
+        print(f"[pipeline] frame gate: skipped {n_gated}/{n_frames} frames "
+              f"({100*n_gated/max(n_frames,1):.1f}%) — {detail}")
+    if n_no_surface:
+        print(f"[pipeline] dropped {n_no_surface} detections with no reconstructed "
+              f"surface inside the box (empty-space detections)")
+
+    return raw_detections, n_frames - n_gated
 
 
 # ---------------------------------------------------------------------------
@@ -367,8 +572,58 @@ def run_pipeline(ply_path: str, prompt: str, job_dir: str,
         raise ValueError("prompt must contain at least one label")
 
     print(f"[pipeline] Step 2: Detecting {labels} in {len(transforms['frames'])} frames …")
-    raw_detections = _run_owlv2(frames_dir, labels, transforms, scene_radius,
-                                score_threshold=cfg.score_threshold)
+    # Detection is by far the most expensive stage (tens of minutes for a few
+    # thousand frames), while everything after it is threshold tuning that runs
+    # in seconds. Cache the raw detections so re-clustering does not require
+    # re-detecting. The cache is keyed on the inputs that would change what
+    # OWLv2 actually returns; anything downstream of it is free to vary.
+    cache_path = job_dir / "raw_detections.json"
+    cache_key = {
+        "labels": labels,
+        "score_threshold": cfg.score_threshold,
+        "n_frames": len(transforms["frames"]),
+        "frame_gate": cfg.frame_gate,
+        "frame_sharpness_pct": cfg.frame_sharpness_pct,
+        "min_frame_sharpness": cfg.min_frame_sharpness,
+        "min_frame_alpha_frac": cfg.min_frame_alpha_frac,
+        "min_frame_median_depth_frac": cfg.min_frame_median_depth_frac,
+        "frame_alpha_thresh": cfg.frame_alpha_thresh,
+        "fg_depth_pct": cfg.fg_depth_pct,
+        "min_box_surface_px": cfg.min_box_surface_px,
+        "min_box_surface_frac": cfg.min_box_surface_frac,
+    }
+    raw_detections = n_detected_frames = None
+    if cache_path.exists() and cfg.use_detection_cache:
+        cached = json.load(open(cache_path))
+        if cached.get("key") == cache_key:
+            raw_detections = [
+                {**d,
+                 "position": np.array(d["position"]),
+                 "scale":    np.array(d["scale"])}
+                for d in cached["detections"]
+            ]
+            n_detected_frames = cached["n_detected_frames"]
+            print(f"[pipeline] reusing {len(raw_detections)} cached raw detections "
+                  f"from {cache_path} (detection inputs unchanged)")
+        else:
+            print(f"[pipeline] detection cache present but inputs changed — re-detecting")
+
+    if raw_detections is None:
+        raw_detections, n_detected_frames = _run_owlv2(
+            frames_dir, labels, transforms, scene_radius,
+            score_threshold=cfg.score_threshold, cfg=cfg)
+        with open(cache_path, "w") as f:
+            json.dump({
+                "key": cache_key,
+                "n_detected_frames": n_detected_frames,
+                "detections": [
+                    {**d,
+                     "position": np.asarray(d["position"]).tolist(),
+                     "scale":    np.asarray(d["scale"]).tolist()}
+                    for d in raw_detections
+                ],
+            }, f)
+        print(f"[pipeline] cached {len(raw_detections)} raw detections → {cache_path}")
 
     frame_annotations: dict = {}   # frame_idx (str) → [{label, object_idx, box, score}]
 
@@ -379,13 +634,31 @@ def run_pipeline(ply_path: str, prompt: str, job_dir: str,
         print(f"[pipeline] Step 3: Clustering {len(raw_detections)} raw detections …")
         effective_min_votes = cfg.min_votes
         if cfg.min_vote_frac is not None:
-            n_views = len(transforms["frames"])
+            # Scale against the frames detection ACTUALLY ran on, not the total
+            # rendered. The quality gate can remove a large fraction of a run's
+            # frames, and dividing by the pre-gate count would silently raise
+            # the effective bar by exactly that fraction — the same
+            # selectivity drift min_vote_frac exists to prevent.
+            n_views = n_detected_frames
             effective_min_votes = max(1, round(cfg.min_vote_frac * n_views))
-            print(f"[pipeline] min_vote_frac={cfg.min_vote_frac} x {n_views} views "
-                  f"-> effective min_votes={effective_min_votes}")
+            print(f"[pipeline] min_vote_frac={cfg.min_vote_frac} x {n_views} "
+                  f"gate-passing views -> effective min_votes={effective_min_votes}")
+        # Merge radius. Anchored to max_object_diag (the caller's own statement
+        # of how big an object can be, in native units) rather than to
+        # scene_radius, which is the size of the ROOM and has nothing to do with
+        # how far apart two detections of one object land.
+        if cfg.cluster_eps is not None:
+            eps_m = cfg.cluster_eps
+        elif cfg.max_object_diag is not None:
+            eps_m = cfg.cluster_eps_frac * cfg.max_object_diag
+        else:
+            eps_m = transforms.get("scene_radius", scene_radius) * 0.20
+        print(f"[pipeline] cluster radius = {eps_m:.4f} native units"
+              + (f" (label overrides: {cfg.label_eps_scale})" if cfg.label_eps_scale else ""))
+
         clustered = _cluster_detections(
             raw_detections,
-            eps_m=transforms.get("scene_radius", scene_radius) * 0.20,
+            eps_m=eps_m,
             max_per_label=cfg.max_per_label,
             min_votes=effective_min_votes,
             min_peak_score=cfg.min_peak_score,
@@ -393,6 +666,8 @@ def run_pipeline(ply_path: str, prompt: str, job_dir: str,
             max_height_z=cfg.max_height_z,
             min_height_z_light=cfg.min_height_z_light,
             label_overrides=cfg.label_overrides,
+            label_eps_scale=cfg.label_eps_scale,
+            min_object_extent=cfg.min_object_extent,
         )
         n_before_dedup = len(clustered)
         clustered = _dedup_cross_label(clustered, overlap_frac=cfg.cross_label_overlap_frac)

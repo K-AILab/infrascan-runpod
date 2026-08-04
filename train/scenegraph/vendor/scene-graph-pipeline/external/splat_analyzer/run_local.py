@@ -41,38 +41,101 @@ def main():
                     "splat's own 8-position/min_votes=5 baseline (5/192)")
     p.add_argument("--min_peak_score",  type=float, default=d.min_peak_score)
     p.add_argument("--max_per_label",   type=int,   default=d.max_per_label,
-                    help="cap on kept clusters per label — was a hidden hardcoded "
-                    "3 with no way to change it; raise this if a label plausibly "
-                    "has more real instances than are coming out")
+                    help="cap on kept clusters per label; raise it if a label "
+                    "plausibly has more real instances than are coming out")
     p.add_argument("--max_object_diag", type=float, default=d.max_object_diag,
-                    help="native units — reject any detection/cluster whose implied "
-                    "real-world diagonal exceeds this (was unbounded; a single bad "
-                    "OWLv2 box could produce a multi-meter 'door'/'window'/'cabinet')")
+                    help="native units — reject any detection whose implied real-world "
+                    "diagonal exceeds this. A single bad 2D box can otherwise lift "
+                    "into a multi-metre object")
     p.add_argument("--max_height_z", type=float, default=None,
-                    help="native units, world Z (this project's splats are Z-up) — "
-                    "reject any detection above this height whose label isn't "
-                    "light/window; confirmed directly that 'table' detections split "
-                    "cleanly into a ceiling-height false-positive group and a real "
-                    "desk-height group on this data")
+                    help="native units, world Z (these splats are Z-up) — reject any "
+                    "detection above this height whose label is not ceiling- or "
+                    "wall-mounted. Useful where a label splits cleanly into a "
+                    "ceiling-height false-positive group and a real desk-height group")
     p.add_argument("--min_height_z_light", type=float, default=None,
                     help="native units — reject any 'light' detection BELOW this "
-                    "height (light is exempt from --max_height_z since it can "
-                    "legitimately be near ceiling, but that's not the same as being "
-                    "plausible at any height — confirmed directly that 32%% of raw "
-                    "light detections on this data were at desk/floor height)")
+                    "height. Lights are exempt from --max_height_z since they can "
+                    "legitimately sit near the ceiling, but that is not the same as "
+                    "being plausible at any height")
     p.add_argument("--cross_label_overlap_frac", type=float, default=d.cross_label_overlap_frac,
                     help="reject the lower-confidence detection of a DIFFERENT-label "
                     "pair whose 3D boxes overlap more than this fraction of the "
-                    "smaller box's volume — confirmed directly that several "
-                    "'table'/'chair' pairs overlapped 57-79%%, the same integrated "
-                    "desk+chair unit kept under two competing labels")
+                    "smaller box's volume — one physical object detected under two "
+                    "competing labels, e.g. an integrated desk+chair unit")
     p.add_argument("--n_positions", type=int, default=None,
-                    help="override the quality preset's camera-position count — "
-                    "quality=high's fixed 8 positions left real gaps in room "
-                    "coverage on this splat (confirmed: camera X range didn't "
-                    "reach one edge of the room at all), and only 8 positions "
-                    "means each downward-facing view (needed for tables/desks) "
-                    "is a small fraction of total coverage")
+                    help="override the quality preset's camera-position count. The "
+                    "presets are small enough to leave coverage gaps in a large "
+                    "room, and to make downward-facing views (needed for desks) a "
+                    "small fraction of the total")
+    p.add_argument("--n_azimuth", type=int, default=None,
+                    help="override the quality preset's per-position azimuth "
+                    "(horizontal) view count — more views around each camera "
+                    "position, independent of how many positions there are")
+    p.add_argument("--n_elevation", type=int, default=None,
+                    help="override the quality preset's per-position elevation "
+                    "(vertical) view count — more up/down angles at each "
+                    "camera position, independent of how many positions there are")
+
+    # ── render resolution / field of view ──────────────────────────────────
+    p.add_argument("--width",  type=int, default=d.width,
+                    help=f"render width in px (default {d.width}) — OWLv2 resizes "
+                    "its input to 960x960 internally, so rendering much below "
+                    "that just feeds it upsampled blur")
+    p.add_argument("--height", type=int, default=d.height,
+                    help=f"render height in px (default {d.height})")
+    p.add_argument("--fov_deg", type=float, default=d.fov_deg,
+                    help=f"horizontal field of view in degrees (default "
+                    f"{d.fov_deg}). A fisheye-class FoV spreads the pixel budget "
+                    "over a much larger solid angle and distorts frame edges outside "
+                    "OWLv2's training distribution; buy coverage back with "
+                    "--n_azimuth instead")
+
+    # ── frame quality gate ─────────────────────────────────────────────────
+    p.add_argument("--no_frame_gate", action="store_true",
+                    help="run detection on EVERY rendered frame, including blurred "
+                    "and camera-buried ones. Off by default: the detector reliably "
+                    "invents furniture in near-field render haze")
+    p.add_argument("--frame_sharpness_pct", type=float, default=d.frame_sharpness_pct,
+                    help=f"drop the least-sharp N%% of this run's frames (default "
+                    f"{d.frame_sharpness_pct}). Relative rather than absolute "
+                    "because variance-of-Laplacian shifts by an order of "
+                    "magnitude with resolution/FoV and depends on how textured "
+                    "the scene is — a constant tuned on one splat gates away "
+                    "either nothing or everything on the next. 0 disables")
+    p.add_argument("--min_frame_sharpness", type=float, default=d.min_frame_sharpness,
+                    help="optional ABSOLUTE sharpness floor on top of "
+                    "--frame_sharpness_pct (512px-referenced units)")
+    p.add_argument("--min_frame_alpha_frac", type=float, default=d.min_frame_alpha_frac,
+                    help="minimum fraction of pixels backed by real reconstructed "
+                    "surface for a frame to be used")
+
+    # ── camera placement ───────────────────────────────────────────────────
+    p.add_argument("--hard_min_surface_dist_frac", type=float,
+                    default=d.hard_min_surface_dist_frac,
+                    help="absolute minimum camera-to-nearest-splat distance as a "
+                    "fraction of the bbox diagonal, enforced on EVERY placement "
+                    "path including the relaxation rounds and farthest-point "
+                    "fill (min_surface_dist_frac was only ever applied on the "
+                    "first round, so at high --n_positions it was meaningless). "
+                    "Placing fewer cameras is preferred over burying them")
+
+    # ── clustering radius ──────────────────────────────────────────────────
+    p.add_argument("--min_object_extent", type=float, default=d.min_object_extent,
+                    help=f"native units — per-axis floor on final box size, a "
+                    f"degeneracy guard only (default {d.min_object_extent}). Keep it "
+                    "small: anything comparable to a real object's size becomes the "
+                    "dominant size error for that class")
+    p.add_argument("--no_detection_cache", action="store_true",
+                    help="ignore <job_dir>/raw_detections.json and re-run OWLv2 "
+                    "even when the detection inputs are unchanged")
+    p.add_argument("--cluster_eps", type=float, default=d.cluster_eps,
+                    help="absolute clustering merge radius in native units; "
+                    "overrides --cluster_eps_frac")
+    p.add_argument("--cluster_eps_frac", type=float, default=d.cluster_eps_frac,
+                    help=f"clustering merge radius as a fraction of "
+                    f"--max_object_diag (default {d.cluster_eps_frac}). Anchoring to "
+                    "object size rather than room size matters: a radius tied to the "
+                    "room merges genuinely separate same-label objects")
     args = p.parse_args()
 
     if not Path(args.ply).exists():
@@ -96,6 +159,20 @@ def main():
         min_height_z_light=args.min_height_z_light,
         cross_label_overlap_frac=args.cross_label_overlap_frac,
         n_positions=args.n_positions,
+        n_azimuth=args.n_azimuth,
+        n_elevation=args.n_elevation,
+        width=args.width,
+        height=args.height,
+        fov_deg=args.fov_deg,
+        frame_gate=not args.no_frame_gate,
+        frame_sharpness_pct=args.frame_sharpness_pct,
+        min_frame_sharpness=args.min_frame_sharpness,
+        min_frame_alpha_frac=args.min_frame_alpha_frac,
+        hard_min_surface_dist_frac=args.hard_min_surface_dist_frac,
+        cluster_eps=args.cluster_eps,
+        cluster_eps_frac=args.cluster_eps_frac,
+        min_object_extent=args.min_object_extent,
+        use_detection_cache=not args.no_detection_cache,
     )
 
     objects = pipeline.run_pipeline(args.ply, args.prompt, job_dir, cfg)

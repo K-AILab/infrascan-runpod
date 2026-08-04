@@ -1,0 +1,3 @@
+Vendored from k-ailab/scene-graph-pipeline @ e4d94093f6570c7d11f7abf00eef33e53b7bf61c
+Packages: pipeline/ pipeline2b/ pipeline9/ external/splat_analyzer/
+Omitted (not on Approach-A path / their own apps): pipeline4 (3DETR), ui/, tri-viewer/, server/

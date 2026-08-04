@@ -161,11 +161,10 @@ def main():
         # comfortably inside that box. A node whose transformed position
         # drifted into such a gap (e.g. from imperfect ICP alignment
         # fitness) sails through and renders as a box floating in visibly
-        # empty space. Confirmed directly on factory_space_14: 14/41 nodes
-        # had ZERO real points anywhere near their own footprint despite
-        # passing the extent clip. Reuse merge_splat_with_p4.py's own
-        # verify_occupancy() (volume-density + footprint-fill gates) here
-        # too, not just for pipeline4-merge candidates.
+        # empty space. In factory 14, 14 of 41 nodes had zero real points
+        # anywhere near their own footprint despite passing the extent clip,
+        # so merge_splat_with_p4.verify_occupancy() (volume-density plus
+        # footprint-fill) is applied here too, not only to merge candidates.
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from merge_splat_with_p4 import verify_occupancy  # noqa: E402
         from scipy.spatial import cKDTree

@@ -115,16 +115,10 @@ def main():
         })
 
     all_centroids = np.array([n["centroid"] for n in nodes])
-    # Guard against a sparse/empty scene: with 0 nodes all_centroids is 1-D
-    # (shape (0,)), so all_centroids[:, 0] raises IndexError. Fall back to origin.
-    if all_centroids.ndim == 2 and len(all_centroids):
-        centroid_xz = [round(float(all_centroids[:, 0].mean()), 4),
-                       round(float(all_centroids[:, 2].mean()), 4)]
-    else:
-        centroid_xz = [0.0, 0.0]
     room = {
         "id": 0,
-        "centroid_xz": centroid_xz,
+        "centroid_xz": [round(float(all_centroids[:, 0].mean()), 4),
+                         round(float(all_centroids[:, 2].mean()), 4)],
         "n_pts": len(nodes),
         "area_m2": None,
     }

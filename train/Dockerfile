@@ -33,34 +33,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3 -m pip install --no-cache-dir \
         ultralytics open3d opencv-python-headless boto3 runpod virtualenv
 
-# ---- scene-graph venvs (Approach A) layered on the base torch/CUDA ----------
-# Two isolated venvs (the pipeline's two envs must NOT be merged), both
-# --system-site-packages so they reuse the base image's torch AND its prebuilt
-# gsplat (no second torch, no gsplat compile — the base has no nvcc):
-#   /opt/venv-splat : (base gsplat) + transformers/OWLv2  (splat render + detect, GPU)
-#   /opt/venv-main  : open3d + open_clip + boto3           (geometry + CLIP + upload)
-# NOTE: gsplat is intentionally NOT installed here — it comes from the base image.
-# The final check confirms venv-splat actually sees gsplat + torch before we go on.
-# venv-splat: OWLv2 detector. torch + gsplat + numpy/scipy/opencv/Pillow all come
-# from the base image / global pip via --system-site-packages, so install ONLY the
-# few extras the splat_analyzer needs (avoids resolver clashes with base pins).
-RUN python3 -m virtualenv --system-site-packages /opt/venv-splat && \
-    /opt/venv-splat/bin/pip install --no-cache-dir -U pip && \
-    /opt/venv-splat/bin/pip install --no-cache-dir \
-        "transformers==4.50.3" "plyfile==1.1.3" "imageio==2.37.3" "six==1.17.0"
-# gsplat's CUDA backend needs a GPU (absent during build), so its import check is
-# INFORMATIONAL only — never fail the build here; it's exercised at runtime.
-RUN /opt/venv-splat/bin/python -c "import torch,transformers;print('[build] venv-splat: torch',torch.__version__,'transformers',transformers.__version__)"; \
-    /opt/venv-splat/bin/python -c "import gsplat;print('[build] venv-splat sees gsplat',getattr(gsplat,'__version__','?'))" || echo '[build] note: gsplat import deferred to runtime (no GPU at build) — OK'
-
-# venv-main: geometry + CLIP + upload. open3d/opencv/boto3/numpy come from the
-# global pip layer above (visible via --system-site-packages); install only the
-# extras (CLIP, sklearn, plyfile).
-RUN python3 -m virtualenv --system-site-packages /opt/venv-main && \
-    /opt/venv-main/bin/pip install --no-cache-dir -U pip && \
-    /opt/venv-main/bin/pip install --no-cache-dir \
-        open_clip_torch scikit-learn "plyfile==1.1.3"
-RUN /opt/venv-main/bin/python -c "import open_clip, sklearn, boto3, open3d, plyfile; print('[build] venv-main: open_clip/sklearn/boto3/open3d/plyfile all import OK')"
+# ---- scene-graph venv (Approach A) layered on the base torch/CUDA -----------
+# ONE combined venv, matching upstream: run_space_pipeline.py drives every stage
+# — including the OWLv2 detector — with a single `sys.executable`, so the whole
+# vendored pipeline expects one environment. --system-site-packages so it reuses
+# the base image's torch AND its prebuilt gsplat (no second torch, no gsplat
+# compile — the base has no nvcc) plus the global pip layer above
+# (ultralytics/open3d/opencv/boto3). The detector uses gsplat's stable
+# `rasterization` API, which the base gsplat provides. We add ONLY the extras the
+# pipeline needs on top (transformers/OWLv2, open_clip/CLIP, sklearn, plyfile,
+# imageio, six) — everything else comes through --system-site-packages.
+RUN python3 -m virtualenv --system-site-packages /opt/venv-sg && \
+    /opt/venv-sg/bin/pip install --no-cache-dir -U pip && \
+    /opt/venv-sg/bin/pip install --no-cache-dir \
+        "transformers==4.50.3" open_clip_torch scikit-learn \
+        "plyfile==1.1.3" "imageio==2.37.3" "six==1.17.0"
+# Confirm the combined env sees every import the pipeline needs. gsplat's CUDA
+# backend needs a GPU (absent at build), so its check is INFORMATIONAL only.
+RUN /opt/venv-sg/bin/python -c "import torch, transformers, open_clip, sklearn, open3d, cv2, plyfile, boto3, ultralytics; print('[build] venv-sg imports OK; torch', torch.__version__, 'transformers', transformers.__version__)"; \
+    /opt/venv-sg/bin/python -c "import gsplat;print('[build] venv-sg sees gsplat',getattr(gsplat,'__version__','?'))" || echo '[build] note: gsplat import deferred to runtime (no GPU at build) — OK'
 
 # vendored training scripts + storage helper + scene-graph pipeline
 COPY train/vendor     /app/train/vendor
@@ -70,12 +61,18 @@ COPY train/scenegraph /app/train/scenegraph
 # node deps for the .ply -> .ksplat converter
 RUN cd /app/train/vendor/node && npm install --omit=dev
 
-# bake OWLv2 (venv-splat) + CLIP ViT-H-14/dfn5b (venv-main) into a fixed cache so
-# the scene-graph stage runs offline. run_scenegraph.py points HF_HOME here.
+# Bake OWLv2 + CLIP ViT-H-14/dfn5b into a fixed HF cache, and SAM (mobile_sam.pt)
+# into the vendored repo root, so the scene-graph stage runs fully offline.
+# run_scenegraph.py points HF_HOME here at runtime. refit_box_from_masks.py loads
+# 'mobile_sam.pt' by its default relative name with cwd=<vendored repo>, so the
+# weight must live at that repo root.
 RUN HF_HOME=/opt/sg-models/hf HUGGINGFACE_HUB_CACHE=/opt/sg-models/hf TORCH_HOME=/opt/sg-models/torch \
-        /opt/venv-splat/bin/python /app/train/scenegraph/prefetch_weights.py owlv2 && \
+        /opt/venv-sg/bin/python /app/train/scenegraph/prefetch_weights.py owlv2 && \
     HF_HOME=/opt/sg-models/hf HUGGINGFACE_HUB_CACHE=/opt/sg-models/hf TORCH_HOME=/opt/sg-models/torch \
-        /opt/venv-main/bin/python  /app/train/scenegraph/prefetch_weights.py clip
+        /opt/venv-sg/bin/python /app/train/scenegraph/prefetch_weights.py clip && \
+    cd /app/train/scenegraph/vendor/scene-graph-pipeline && \
+    YOLO_CONFIG_DIR=/opt/sg-models/yolo \
+        /opt/venv-sg/bin/python /app/train/scenegraph/prefetch_weights.py sam
 
 COPY train/handler.py /app/handler.py
 
@@ -83,11 +80,10 @@ COPY train/handler.py /app/handler.py
 # small network volume — splatfacto checkpoints are ~700MB each and filled the
 # volume mid-run. Bump the endpoint's Container Disk to ~60GB. Model caches also
 # go here (re-downloaded per cold start; small, fine).
-# PY_SPLAT/PY_MAIN: the scene-graph venvs (used by train/handler.py step 10).
+# PY_SG: the combined scene-graph venv (used by train/handler.py step 10).
 ENV HF_HOME=/train/hf TORCH_HOME=/train/torch \
     YOLO_CONFIG_DIR=/train/yolo \
     TRAIN_WORKROOT=/train \
-    PY_SPLAT=/opt/venv-splat/bin/python \
-    PY_MAIN=/opt/venv-main/bin/python
+    PY_SG=/opt/venv-sg/bin/python
 WORKDIR /app
 CMD ["python3", "-u", "/app/handler.py"]

@@ -146,12 +146,11 @@ def verify_occupancy(node, xyz_tree, xyz):
         return False, n_inside
     # A box can pass the volume-averaged density check while still mostly
     # covering empty space - a small dense cluster inside an oversized
-    # footprint inflates the average. Confirmed directly: one box measured
-    # 3185 pts/m^3 by volume (comfortably over threshold) while only 36% of
-    # its own XZ footprint had any real point at any height - visibly a box
-    # drawn over mostly-empty ground. Check footprint fill directly: does
-    # any point (at ANY height) fall in each cell of the box's own XZ
-    # footprint, rasterized at 5cm.
+    # footprint inflates the average. One box measured 3185 pts/m^3 by
+    # volume, comfortably over threshold, while only 36% of its own XZ
+    # footprint held any point at any height - a box drawn over mostly empty
+    # ground. So footprint fill is checked directly: does any point, at any
+    # height, fall in each cell of the box's XZ footprint rasterized at 5cm.
     res = 0.05
     x0, x1 = cmin[0], cmax[0]
     z0, z1 = cmin[2], cmax[2]
@@ -220,11 +219,10 @@ def main():
     # structural element (a door/window/curtain that 3DETR/CLIP's own
     # det_class correctly called structural but a downstream CLIP pass
     # overrode with a furniture label like "cabinet"/"shelf", so it never
-    # got dropped as structure). Confirmed directly on shinhan's own
-    # pipeline4 output: several raw det_class=window/door/curtain nodes at
-    # 2.6-2.84m tall (a 3.1m room) survived into the final graph relabeled
-    # as "cabinet"/"shelf". This is a geometric sanity check, independent
-    # of label, so it generalizes to any space.
+    # got dropped as structure). In shinhan's pipeline4 output, several raw
+    # det_class=window/door/curtain nodes 2.6-2.84 m tall in a 3.1 m room
+    # survived into the final graph relabelled as "cabinet"/"shelf". The
+    # test is purely geometric and independent of label, so it generalises.
     room_height_m = float(np.percentile(xyz[:, 1], 99) - np.percentile(xyz[:, 1], 1))
     MAX_FURNITURE_HEIGHT_FRAC = 0.75
     max_h = room_height_m * MAX_FURNITURE_HEIGHT_FRAC

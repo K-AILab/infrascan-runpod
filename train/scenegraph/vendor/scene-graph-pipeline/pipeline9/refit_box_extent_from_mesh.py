@@ -79,12 +79,12 @@ def largest_connected_component_at_origin(xy, cell_size, origin_radius_cells=2):
     to the SAME plane by height - it says nothing about whether that point
     is part of the same CONTIGUOUS physical surface. Floor and a raised
     tabletop can sit at heights close enough for a shared plane fit to
-    accept both. Confirmed directly: every one of 18 refit tables grew by
-    a suspiciously uniform ~3x FOOTPRINT AREA (i.e. ~2x per linear axis,
-    exactly matching the search window's own expansion factor) rather than
-    varying per-table extent - a strong sign growth was hitting the search
-    boundary/plane-membership alone, not each table's real edge, and the
-    user directly confirmed some boxes ended up spanning empty floor.
+    accept both. Without the connectivity requirement, all 18 refit tables
+    grew by a uniform ~3x in footprint area - ~2x per linear axis, exactly
+    the search window's own expansion factor - instead of varying per table.
+    That uniformity means growth was stopping at the search boundary and
+    plane membership rather than at each table's real edge, and the enlarged
+    boxes visibly spanned empty floor.
     Requiring the kept region to be the connected component reachable from
     the detector's own original center means a genuine GAP (no mesh
     points, or points on a different local plane) stops growth there,
