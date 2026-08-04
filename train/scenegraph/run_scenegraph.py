@@ -203,14 +203,19 @@ def run(args) -> dict:
         if args.skip_verify:
             cmd.append("--skip-verify")
         print("[scenegraph] $ " + " ".join(cmd), flush=True)
-        proc = subprocess.run(cmd, cwd=str(REPO), env=_pipeline_env(spaces_json),
-                              capture_output=True, text=True)
-        _LOG.append(proc.stdout or "")
-        _LOG.append("STDERR:\n" + (proc.stderr or ""))
-        print((proc.stdout or "")[-4000:], flush=True)
-        if proc.returncode != 0:
-            raise RuntimeError(f"run_space_pipeline exited {proc.returncode}\n"
-                               + (proc.stderr or "")[-3000:])
+        # Stream the pipeline's output line-by-line so the worker log shows live
+        # progress (a ~30-min run would otherwise be silent), while still keeping
+        # every line in _LOG for the S3 pipeline.log dump.
+        proc = subprocess.Popen(cmd, cwd=str(REPO), env=_pipeline_env(spaces_json),
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1)
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+            _LOG.append(line.rstrip("\n"))
+        rc = proc.wait()
+        if rc != 0:
+            raise RuntimeError(f"run_space_pipeline exited {rc}\n"
+                               + "\n".join(_LOG[-40:]))
 
         # ---- 3. convert to our viewer schema + upload ----------------------
         sg = _convert_to_viewer(slug)
@@ -219,6 +224,11 @@ def run(args) -> dict:
         key = f"scans/{slug}/scene_graph.json"
         s3.put_object(Bucket=bucket, Key=key,
                       Body=json.dumps(sg).encode(), ContentType="application/json")
+        # clear any stale error dump from a previous failed run of this slug
+        try:
+            s3.delete_object(Bucket=bucket, Key=f"scans/{slug}/scenegraph_error.txt")
+        except Exception:
+            pass
         # keep the pipeline's own outputs alongside for provenance/debugging
         for tag in ("boxes_final", "geo_true", "splat_to_pc_transform"):
             p = OUT / f"{slug}_{tag}.json"
