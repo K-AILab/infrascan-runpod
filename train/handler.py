@@ -6,7 +6,7 @@ then replicates abai's exact chain:
 
   make_transforms.py       cameras.json -> nerfstudio transforms.json (504)
   build_hires_dataset.py   re-render perspective crops at 1024 (reuse poses)
-  reproject_scanner_depth  OUR pointcloud.ply -> per-view depth  (depth_scanner/)
+  reproject_scanner_depth  OUR pointcloud.ply -> per-view depth  (depth_scanner_splat/)
   generate_person_masks    YOLO person masks -> masks/  (+ wire mask_path)
   [5-iter dry run]         measure THIS scene's DEPTH_SCALE (dataparser scale)
   ns_depthsup.py           splatfacto 30k + EdgeAwareLogL1 depth loss (+masks)
@@ -162,9 +162,16 @@ def handler(job):
         _sh([PY, VENDOR / "build_hires_dataset.py", "--src", src,
              "--ref-data", ds504, "--out", ds, "--res", "1024"])
 
-        # 3) reproject OUR pointcloud -> per-view depth
+        # 3) reproject OUR pointcloud -> per-view depth. depth_scanner_splat (NOT the
+        # legacy depth_scanner name): each point is splatted over its own angular
+        # footprint (point_spacing/z), fixing a z-buffer occlusion bug where a near
+        # surface's sparse pixels let a far surface leak through and win depth. Root
+        # cause of the "wall reads as absent in free-fly" report -- alpha coverage was
+        # always 100%, it was the wrong surface at the wrong depth, not missing geometry.
+        # --point-spacing defaults to -1 (auto-measured from the cloud); do not pass 0,
+        # which selects the legacy leaking behaviour.
         _sh([PY, VENDOR / "reproject_scanner_depth.py", "--data", ds,
-             "--pointcloud", src / "pointcloud.ply", "--out", ds / "depth_scanner"])
+             "--pointcloud", src / "pointcloud.ply", "--out", ds / "depth_scanner_splat"])
 
         # 4) YOLO person masks (+ wire mask_path)
         if use_masks:
@@ -176,7 +183,7 @@ def handler(job):
 
         # 6) depth-supervised splatfacto (abai's recipe)
         env = os.environ.copy()
-        env["DEPTH_DIR"] = str(ds / "depth_scanner")
+        env["DEPTH_DIR"] = str(ds / "depth_scanner_splat")
         env["DEPTH_W"] = "0.1"
         env["DEPTH_START_ITER"] = "500"
         env["DEPTH_SCALE"] = str(scale)

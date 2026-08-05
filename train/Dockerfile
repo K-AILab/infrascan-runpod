@@ -17,8 +17,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-cer
 
 # extra python deps not in the nerfstudio image.
 # The nerfstudio image exposes Python as `python3` (no bare `pip` on PATH) — use -m pip.
+# scipy: reproject_scanner_depth.py's default path (--point-spacing -1, auto-measure)
+# lazily imports scipy.spatial.cKDTree. It is very likely already present via
+# nerfstudio's own dependency chain (plyfile, imported unconditionally by the SAME
+# script, was never explicitly installed here either, and that import already works
+# today) -- installed explicitly anyway since pip no-ops if already satisfied and an
+# unverified transitive dependency is not something to assume silently.
 RUN python3 -m pip install --no-cache-dir \
-        ultralytics open3d opencv-python-headless boto3 runpod
+        ultralytics open3d opencv-python-headless boto3 runpod scipy
 
 # vendored training scripts + storage helper
 COPY train/vendor /app/train/vendor
