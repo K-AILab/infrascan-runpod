@@ -30,8 +30,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # The nerfstudio image exposes Python as `python3` (no bare `pip` on PATH) — use -m pip.
 # virtualenv: the nerfstudio base's python lacks the `venv`/ensurepip bootstrap,
 # so we use virtualenv (bundles its own pip) to create the scene-graph venvs below.
+# scipy: reproject_scanner_depth.py's default path (--point-spacing -1, auto-measure)
+# lazily imports scipy.spatial.cKDTree. It is very likely already present via
+# nerfstudio's own dependency chain (plyfile, imported unconditionally by the SAME
+# script, was never explicitly installed here either, and that import already works
+# today) -- installed explicitly anyway since pip no-ops if already satisfied and an
+# unverified transitive dependency is not something to assume silently.
 RUN python3 -m pip install --no-cache-dir \
-        ultralytics open3d opencv-python-headless boto3 runpod virtualenv
+        ultralytics open3d opencv-python-headless boto3 runpod virtualenv scipy
 
 # ---- scene-graph venv (Approach A) layered on the base torch/CUDA -----------
 # ONE combined venv, matching upstream: run_space_pipeline.py drives every stage
