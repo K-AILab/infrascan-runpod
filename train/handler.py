@@ -4,6 +4,7 @@ Runs AFTER the pipeline job. Input: {"slug": "<space>"}. It pulls the scan from
 S3 (scans/<slug>/: frames, views, cameras.json, intrinsics.json, pointcloud.ply),
 then replicates abai's exact chain:
 
+  filter_bad_poses.py      drop pz000 crops w/ genuine rig-roll error (>15deg from consensus up)
   make_transforms.py       cameras.json -> nerfstudio transforms.json (504)
   build_hires_dataset.py   re-render perspective crops at 1024 (reuse poses)
   reproject_scanner_depth  OUR pointcloud.ply -> per-view depth  (depth_scanner_splat/)
@@ -42,7 +43,7 @@ SG_DIR = Path("/app/train/scenegraph")
 PY_SG = os.environ.get("PY_SG", "/opt/venv-sg/bin/python")
 
 # Bump on every image change so the endpoint's returned build can be identified.
-HANDLER_VERSION = "2026-08-05-detailfloater-v2+scenegraph"
+HANDLER_VERSION = "2026-08-06-bad-pose-filter"
 
 # abai's detailfloater-v2 recipe (factory13-pz000-detailfloater-30k-v2), replacing the
 # earlier shinhan-pz000-hires-30k values. 7 knobs differ: 3 raise DETAIL (densify on a
@@ -206,12 +207,24 @@ def handler(job):
     try:
         _dl_scan(slug, src)
 
-        # 1) cameras.json -> transforms.json (504)  2) re-render at 1024
+        # 1) drop pz000 crops with a genuine rig-roll error (>15deg from this scan's own
+        # consensus "up" direction) BEFORE building the training dataset, so the exclusion
+        # propagates cleanly through make_transforms/build_hires_dataset/depth reprojection
+        # with no separate patching downstream. Automates the diagnostic previously run by
+        # hand on every space (see PSNR_PLATEAU_DIAGNOSTIC.md Sec 7): these are real pose
+        # defects (raw pose wrong, not a training artifact), rare (~1-2%) but each one
+        # renders catastrophically at its own viewpoint and can't be trained around.
+        bad_pose_report = root / "bad_pose_report.json"
+        _sh([PY, VENDOR / "filter_bad_poses.py", "--cameras", src / "cameras.json",
+             "--report", bad_pose_report])
+        bad_poses_dropped = json.loads(bad_pose_report.read_text())["pz000_dropped"]
+
+        # 2) cameras.json -> transforms.json (504)  3) re-render at 1024
         _sh([PY, VENDOR / "make_transforms.py", "--src", src, "--out", ds504])
         _sh([PY, VENDOR / "build_hires_dataset.py", "--src", src,
              "--ref-data", ds504, "--out", ds, "--res", "1024"])
 
-        # 3) reproject OUR pointcloud -> per-view depth. depth_scanner_splat (NOT the
+        # 4) reproject OUR pointcloud -> per-view depth. depth_scanner_splat (NOT the
         # legacy depth_scanner name): each point is splatted over its own angular
         # footprint (point_spacing/z), fixing a z-buffer occlusion bug where a near
         # surface's sparse pixels let a far surface leak through and win depth. Root
@@ -222,15 +235,15 @@ def handler(job):
         _sh([PY, VENDOR / "reproject_scanner_depth.py", "--data", ds,
              "--pointcloud", src / "pointcloud.ply", "--out", ds / "depth_scanner_splat"])
 
-        # 4) YOLO person masks (+ wire mask_path)
+        # 5) YOLO person masks (+ wire mask_path)
         if use_masks:
             _sh([PY, VENDOR / "generate_person_masks.py", "--data", ds])
             _add_mask_paths(ds)
 
-        # 5) per-scene DEPTH_SCALE (dry run)
+        # 6) per-scene DEPTH_SCALE (dry run)
         scale = _measure_depth_scale(ds, root / "scaleprobe")
 
-        # 6) depth-supervised splatfacto (abai's recipe)
+        # 7) depth-supervised splatfacto (abai's recipe)
         env = os.environ.copy()
         env["DEPTH_DIR"] = str(ds / "depth_scanner_splat")
         env["DEPTH_W"] = "0.1"
@@ -244,27 +257,27 @@ def handler(job):
              "--max-num-iterations", str(iters), "--steps-per-save", "5000"]
             + MODEL_ARGS + data_args(str(ds)), env=env)
 
-        # 7) export checkpoint -> splat.ply
+        # 8) export checkpoint -> splat.ply
         cfg = sorted(out.glob("**/config.yml"))
         if not cfg:
             raise RuntimeError("no config.yml after training")
         _sh([PY, VENDOR / "ns_export_gs.py", "--load-config", cfg[-1],
              "--output-dir", export])
 
-        # 8) save the trained splat.ply to S3 FIRST (so a 50-min run is never lost
+        # 9) save the trained splat.ply to S3 FIRST (so a 50-min run is never lost
         #    if a trailing step fails — we can re-convert without re-training).
         ply = export / "splat.ply"
         s3.upload_file(str(ply), BUCKET, f"scans/{slug}/splat.ply")
         print(f"[train] uploaded scans/{slug}/splat.ply", flush=True)
 
-        # 9) splat.ply -> splat.ksplat -> S3 so the tri-viewer's 3D tab can stream it
+        # 10) splat.ply -> splat.ksplat -> S3 so the tri-viewer's 3D tab can stream it
         ksplat = root / "splat.ksplat"
         _sh(["node", VENDOR / "node" / "ply2ksplat.mjs", ply, ksplat, "3"])
         key = f"scans/{slug}/splat.ksplat"
         s3.upload_file(str(ksplat), BUCKET, key)
         print(f"[train] uploaded {key}", flush=True)
 
-        # 10) scene graph (Approach A: OWLv2-on-splat) on the just-trained splat.
+        # 11) scene graph (Approach A: OWLv2-on-splat) on the just-trained splat.
         #     Runs on the SAME warm GPU worker and reads the local files
         #     (export/splat.ply + src/{pointcloud.ply,cameras.json,intrinsics.json,
         #     views/}) — no re-download. Uploads scans/<slug>/scene_graph.json.
@@ -287,6 +300,7 @@ def handler(job):
         return {"slug": slug, "has3d": True, "splat_key": key,
                 "has_scene_graph": has_scene_graph,
                 "depth_scale": scale, "iters": iters,
+                "bad_poses_dropped": bad_poses_dropped,
                 "handler_version": HANDLER_VERSION}
     except subprocess.CalledProcessError as e:
         return {"error": f"stage failed rc={e.returncode}: {e.cmd[:3]}",
