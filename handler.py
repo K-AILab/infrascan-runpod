@@ -5,14 +5,15 @@ platform is cloned into the image (fix/da3-serpentine-pose-order branch), and
 this handler drives it headlessly the same way the web app does on upload:
 
     create space -> place video -> stitch -> frames -> views
-        -> 00b_gen_da3 (depth+poses)  [GPU]
-        -> 01_propose (FastSAM)        [GPU]
-        -> 02_embed (DINOv2)           [GPU]
-        -> 02b_match_views
-        -> 03_backproject (object point cloud)
-        -> 03b_merge_groups
-        -> 04_index
-    -> zip {da3 npz, cameras.json, pointcloud, index} -> upload to bucket -> URL
+        -> 00b_da3_streaming (depth + poses + pointcloud.ply)  [GPU]
+        -> pano_clean (operator removal, non-fatal)             [GPU]
+    -> upload the unpacked dataset straight to S3 under scans/<slug>/
+
+    The object-search stages (01_propose -> 02_embed -> 02b_match_views ->
+    03_backproject -> 03b_merge_groups -> 04_index: proposals -> embeddings ->
+    cross-view matching -> a FAISS index) used to run here too, but their outputs
+    were never uploaded anywhere a viewer reads from — pure wasted GPU time every
+    scan. Dropped from pipeline.runner's STAGES; see that file's docstring.
 
 Input JSON:
     {"input": {"video_url": "...", "slug": "scan1", "capture_type": "insta360",
@@ -38,12 +39,13 @@ WORKROOT = os.environ.get("INFRASCAN_WORKROOT", "/workspace/runs")
 
 # Bump when rebuilding so we can confirm (via a cheap maintenance:df call) that the
 # endpoint is actually serving the NEW image before kicking off an expensive re-run.
-HANDLER_VERSION = "2026-08-03-reorg"
+HANDLER_VERSION = "2026-08-06-drop-stage2"
 
-# The proven entrypoint is `python -m pipeline.runner --slug <slug>`, which runs
-# 00b_gen_da3 -> 01_propose -> 02_embed -> 02b_match_views -> 03_backproject
-# -> 03b_merge_groups -> 04_index -> gen_topdown -> downsample_ply (through the
-# point cloud). We call that directly rather than re-implementing the stage list.
+# The entrypoint is `python -m pipeline.runner --slug <slug>`, which now only runs
+# the cosmetic/optional gen_topdown -> downsample_ply stages (00b_da3_streaming
+# already ran directly, above, and the object-search stages were dropped — see
+# runner.py's docstring). We call it directly rather than re-implementing the
+# (now short) stage list.
 PRE_STAGES = ["_00_stitch_insv", "00_video_to_img", "00a_sample_views", "00b_da3_streaming"]
 
 

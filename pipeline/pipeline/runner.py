@@ -1,8 +1,14 @@
-"""Pipeline runner — orchestrates the 7 stages, reports failures upstream.
+"""Pipeline runner — orchestrates the post-DA3 stages, reports failures upstream.
 
-Sketch only. The real implementation invokes 00b → 04 + topdown + downsample,
-each as a subprocess, and translates exit codes / stderr into the
-user-friendly hints from app.validation.FAILURE_HINTS.
+handler.py already runs 00b_da3_streaming directly (depth + poses + pointcloud.ply)
+before calling this. The object-search stages that used to run here — 01_propose,
+02_embed, 02b_match_views, 03_backproject, 03b_merge_groups, 04_index (proposals ->
+embeddings -> cross-view matching -> a FAISS index) — were dropped: their outputs
+(proposals.jsonl, embeddings.npy, index.faiss) were never uploaded to S3 by handler.py
+in the current S3-streaming architecture, so every run was paying for a full GPU
+object-detection/embedding/matching pass with nothing downstream ever reading the
+result. 00b_gen_da3 (the older, non-streaming DA3 stage some of those depended on)
+is dropped for the same reason — its only consumer was 03_backproject.
 
 Usage:
     python -m pipeline.runner --slug my-floor
@@ -20,13 +26,6 @@ from app.validation import FAILURE_HINTS, record_stage_failure, record_stage_ok
 
 
 STAGES = [
-    "00b_gen_da3",
-    "01_propose",
-    "02_embed",
-    "02b_match_views",
-    "03_backproject",
-    "03b_merge_groups",
-    "04_index",
     "gen_topdown",
     "downsample_ply",
 ]
