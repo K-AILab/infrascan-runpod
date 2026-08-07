@@ -79,6 +79,7 @@ STAGE_LABELS = {
     "00b_da3_streaming": "Estimating depth + camera poses",
     "pipeline.runner":  "Building floor plan + point cloud",
     "pano_clean":       "Removing capture operator",
+    "upload":           "Uploading scan to storage",
 }
 STAGE_ORDER = list(STAGE_LABELS)
 
@@ -356,6 +357,19 @@ def handler(job):
         bucket = os.environ["S3_BUCKET"]
         prefix = f"scans/{slug}"
 
+        # Every file goes up one at a time (thousands of them: ~206 frames +
+        # ~7,400 views + a depth file per view is not unusual), with no log
+        # output at all previously — a job could sit here for many minutes
+        # looking identical to a hung one. Report the stage once, then print
+        # periodically so the console shows real, live progress through it.
+        _report(job, "upload")
+        total_expected = (
+            sum(1 for _ in (data_dir / "frames").glob("*") if _.is_file())
+            + sum(1 for _ in (data_dir / "views").glob("*") if _.is_file())
+        )
+        print(f"[s3] uploading ~{total_expected} frame/view files (plus depth, "
+              f"cameras, pointcloud, cleaned panoramas)...", flush=True)
+
         def _put(local: Path, key: str):
             s3c.upload_file(str(local), bucket, key)
 
@@ -364,6 +378,8 @@ def handler(job):
             for p in sorted((data_dir / sub).glob("*")):
                 if p.is_file():
                     _put(p, f"{prefix}/{sub}/{p.name}"); nfiles += 1
+                    if nfiles % 500 == 0:
+                        print(f"[s3] uploaded {nfiles} files so far...", flush=True)
         for f in ("cameras.json", "intrinsics.json", "pointcloud.ply"):
             if (data_dir / f).exists():
                 _put(data_dir / f, f"{prefix}/{f}"); nfiles += 1
@@ -371,6 +387,8 @@ def handler(job):
         if ro.is_dir():
             for npz in sorted(ro.glob("frame_*.npz")):
                 _put(npz, f"{prefix}/depth/{npz.name}"); nfiles += 1
+                if nfiles % 500 == 0:
+                    print(f"[s3] uploaded {nfiles} files so far...", flush=True)
 
         # operator-removed panoramas (if the pano_clean step produced them). The viewer
         # picks these up when scenes.json has panoClean=true (set by runpod_worker.py):
