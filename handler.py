@@ -27,7 +27,7 @@ NOTE: this is v1 — the exact per-space layout for the pre-DA3 steps is validat
 against a local run of the platform before trusting it. Every stage is a
 subprocess with captured stderr, so the first failing stage names itself.
 """
-import json, os, glob, shutil, subprocess, sys, tempfile, traceback, urllib.request, uuid
+import json, os, glob, shutil, subprocess, sys, tempfile, threading, traceback, urllib.request, uuid
 from pathlib import Path
 
 import runpod
@@ -67,15 +67,39 @@ def _meaningful_stderr(text, n=80):
 
 
 def _run(cmd, cwd, env, stage):
-    """Run one stage as a subprocess; raise with captured stderr on failure."""
+    """Run one stage as a subprocess; raise with captured stderr on failure.
+
+    Streams stdout line-by-line as the child produces it (RunPod's log tab
+    ships each print() live), instead of the old `subprocess.run(capture_
+    output=True)`, which silently buffers EVERYTHING and only prints once the
+    whole stage exits — a stage with no output for its full duration looked
+    identical to one hard-stuck at line 1, with no way to tell them apart from
+    the log. stderr is still captured whole (not streamed) so DA3/tqdm's
+    flood of \r-redrawn progress bars doesn't spam the console; it's only
+    surfaced, tqdm-stripped, if the stage actually fails."""
     print(f"[stage {stage}] $ {' '.join(str(c) for c in cmd)}", flush=True)
-    r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
-    tail = (r.stderr or "")[-3000:]
-    print((r.stdout or "")[-2000:], flush=True)
-    if r.returncode != 0:
+    proc = subprocess.Popen(cmd, cwd=cwd, env=env, text=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1)
+
+    stderr_lines = []
+
+    def _drain_stderr():
+        for line in proc.stderr:
+            stderr_lines.append(line)
+
+    t = threading.Thread(target=_drain_stderr, daemon=True)
+    t.start()
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+    proc.wait()
+    t.join()
+
+    stderr_text = "".join(stderr_lines)
+    tail = stderr_text[-3000:]
+    if proc.returncode != 0:
         # Surface the REAL error: strip tqdm progress lines so the traceback shows.
-        errtail = _meaningful_stderr(r.stderr) or tail
-        raise RuntimeError(f"stage {stage} exited {r.returncode}\n"
+        errtail = _meaningful_stderr(stderr_text) or tail
+        raise RuntimeError(f"stage {stage} exited {proc.returncode}\n"
                            f"--- stderr (progress bars stripped) ---\n{errtail}")
     return tail
 
