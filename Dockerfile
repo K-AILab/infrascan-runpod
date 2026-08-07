@@ -57,12 +57,33 @@ RUN mkdir -p /app/weights /app/lama_cache/hub/checkpoints && \
     curl -fsSL -o /app/lama_cache/hub/checkpoints/big-lama.pt \
       https://github.com/enesmsahin/simple-lama-inpainting/releases/download/v0.1.0/big-lama.pt
 
-# --- Weights cache + work dir live on the mounted NETWORK VOLUME (/runpod-volume).
-#     Image stays small (no baked weights); DA3 (GIANT) + DINOv2 download ONCE onto
-#     the volume on the first cold start, then every future worker reuses them. ---
-ENV HF_HOME=/runpod-volume/hf TORCH_HOME=/runpod-volume/torch \
+# --- DA3 weights (config.json + model.safetensors ~GIANT + dino_salad.ckpt, ~6.6GB
+#     total), BAKED into the image — same reasoning as the pano_clean weights above.
+#     This used to live on a network volume ("download once, every future worker
+#     reuses it"), but that meant every worker had to run in whichever ONE datacenter
+#     that volume physically lived in, which repeatedly starved this endpoint of GPU
+#     capacity. Baking them in gets the same "no redownload" property WITHOUT pinning
+#     to a datacenter — any worker, anywhere, already has them the moment it starts. ---
+RUN mkdir -p /app/da3_weights && \
+    curl -fsSL -o /app/da3_weights/config.json \
+      https://huggingface.co/depth-anything/DA3NESTED-GIANT-LARGE-1.1/resolve/main/config.json && \
+    curl -fsSL -o /app/da3_weights/model.safetensors \
+      https://huggingface.co/depth-anything/DA3NESTED-GIANT-LARGE-1.1/resolve/main/model.safetensors && \
+    curl -fsSL -o /app/da3_weights/dino_salad.ckpt \
+      https://github.com/serizba/salad/releases/download/v1.0.0/dino_salad.ckpt
+
+# --- Everything else (HF/torch.hub's OWN incidental downloads, e.g. the dinov2 repo
+#     code SALAD's backbone pulls in — separate from the explicit weights above and
+#     not worth replicating at build time) + the per-job scratch dir now live on the
+#     CONTAINER DISK (/ingest), not a network volume — mirrors the train endpoint's
+#     already-proven pattern ("scratch+ckpts on container disk, not the small volume").
+#     handler.py wipes WORKROOT/<slug> at job start+end anyway, so it never needed to
+#     persist across jobs — it just needed to be big enough (see containerDiskInGb on
+#     the endpoint template), which a network volume was never actually required for. ---
+ENV HF_HOME=/ingest/hf TORCH_HOME=/ingest/torch \
     INFRASCAN_PLATFORM_DIR=/app/pipeline \
-    INFRASCAN_WORKROOT=/runpod-volume/runs \
+    INFRASCAN_WORKROOT=/ingest/runs \
+    DA3_WEIGHTS_DIR=/app/da3_weights \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     PANO_CLEAN_YOLO=/app/weights/yolo11x-seg.pt \
     LAMA_TORCH_HOME=/app/lama_cache

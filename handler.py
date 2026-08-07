@@ -39,7 +39,7 @@ WORKROOT = os.environ.get("INFRASCAN_WORKROOT", "/workspace/runs")
 
 # Bump when rebuilding so we can confirm (via a cheap maintenance:df call) that the
 # endpoint is actually serving the NEW image before kicking off an expensive re-run.
-HANDLER_VERSION = "2026-08-06-drop-stage2"
+HANDLER_VERSION = "2026-08-07-no-volume"
 
 # The entrypoint is `python -m pipeline.runner --slug <slug>`, which now only runs
 # the cosmetic/optional gen_topdown -> downsample_ply stages (00b_da3_streaming
@@ -81,9 +81,10 @@ def _run(cmd, cwd, env, stage):
 
 
 # da3_streaming loads three weight files by RELATIVE path (./weights/...) with
-# cwd=da3_streaming/. They are ~6.6 GB total and gitignored, so they are NOT in
-# the image. Cache them on the persistent network volume and symlink them in, so
-# the giant DA3 checkpoint downloads only ONCE across all cold starts.
+# cwd=da3_streaming/. They're gitignored (~6.6 GB), so not in the git tree, but the
+# Dockerfile bakes them into the image at /app/da3_weights (DA3_WEIGHTS_DIR) at build
+# time — this function just symlinks them in. If DA3_WEIGHTS_DIR ever points somewhere
+# without them yet (e.g. local dev), it falls back to downloading them here instead.
 DA3_WEIGHTS = {
     "config.json":
         "https://huggingface.co/depth-anything/DA3NESTED-GIANT-LARGE-1.1/resolve/main/config.json",
@@ -175,11 +176,15 @@ def handler(job):
 
     # Isolate this run's data/DB under the work root; point the platform config at it.
     run_root = Path(WORKROOT) / slug
-    # WORKROOT is a persistent volume keyed by slug, so a re-scan would otherwise inherit the
-    # previous run's DA3 chunk files (_da3_streaming/pcd/*_pcd.ply). merge_ply_files globs those,
-    # mixing stale + fresh chunks into a corrupt pointcloud.ply whose header count != its body
-    # (crashes training / silently drops points). Start every job from a clean dir. The DA3
-    # weights live OUTSIDE run_root (WORKROOT.parent/da3_weights), so they are not touched.
+    # A warm worker can be reused across multiple jobs for the SAME slug (a re-scan),
+    # so run_root isn't guaranteed empty even though it's on the container's own disk
+    # (not persisted across a full cold restart, but not guaranteed clean within one
+    # either). A re-scan landing on a warm worker would otherwise inherit the previous
+    # run's DA3 chunk files (_da3_streaming/pcd/*_pcd.ply) — merge_ply_files globs
+    # those, mixing stale + fresh chunks into a corrupt pointcloud.ply whose header
+    # count != its body (crashes training / silently drops points). Start every job
+    # from a clean dir. The DA3 weights live at DA3_WEIGHTS_DIR (baked into the image,
+    # outside run_root entirely), so they are never touched by this.
     shutil.rmtree(run_root, ignore_errors=True)
     run_root.mkdir(parents=True, exist_ok=True)
     _disk_report("job-start")
