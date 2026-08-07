@@ -130,16 +130,26 @@ def _pipeline_env(spaces_json: Path) -> dict:
 
 def _convert_to_viewer(slug: str) -> dict:
     """Map the pipeline's own output to the scene_graph.json schema our viewer
-    reads (id, label, center[x,y,z], size[x,y,z] in the SPLAT-NATIVE frame; edges
-    src/dst/relation). Geometry comes from <slug>_boxes_final.json (native splat
-    frame, == our .ksplat frame). Edges come from <slug>_geo_true.json, whose
-    node ids are the same box indices (export sets id = list index)."""
+    reads (id, label, center[x,y,z], size[x,y,z], angle in the SPLAT-NATIVE
+    frame; edges src/dst/relation). Geometry comes from <slug>_boxes_final.json
+    (native splat frame, == our .ksplat frame). Edges come from
+    <slug>_geo_true.json, whose node ids are the same box indices (export sets
+    id = list index).
+
+    `angle` is carried straight through from boxes_final.json -- harmonize_scene.py
+    already reconciles it across the topdown/mask-refit passes before this runs, so
+    it's real, correct data; this function was just never copying it into the node
+    dict, silently dropping every box's rotation on the floor between generation and
+    the viewer. boxes_final.json is still uploaded separately (see below) for
+    provenance, but scene_graph.json is now self-contained -- a consumer no longer
+    needs a fragile index-join against a second file to recover orientation."""
     boxes = json.loads((OUT / f"{slug}_boxes_final.json").read_text())["boxes"]
     nodes = [{
         "id": i,
         "label": b["label"],
         "center": [round(float(v), 4) for v in b["center"]],
         "size": [round(abs(float(v)), 4) for v in b["size"]],
+        "angle": round(float(b.get("angle", 0.0)), 6),
     } for i, b in enumerate(boxes)]
 
     edges = []

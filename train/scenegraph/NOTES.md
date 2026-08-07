@@ -79,8 +79,16 @@ reverted by the full re-vendor.)
    writes into `tri-viewer/` and `ui/_spaces/`. We skip that and instead convert
    `pipeline9/out/<slug>_boxes_final.json` (geometry, splat-native frame == our
    `.ksplat` frame) + `<slug>_geo_true.json` (edges) into our viewer schema
-   (`{slug,coord_frame:"splat",up_axis:"z",nodes:[{id,label,center,size}],
+   (`{slug,coord_frame:"splat",up_axis:"z",nodes:[{id,label,center,size,angle}],
    edges:[{src,dst,relation}],labels}`) and upload `scans/<slug>/scene_graph.json`.
+   `angle` (added after the first version of this conversion) is carried straight
+   through from `boxes_final.json`, where `harmonize_scene.py` already reconciles
+   it across the topdown/mask-refit passes -- earlier, `_convert_to_viewer()` read
+   `label/center/size` off each box but silently dropped `angle`, so every box's
+   rotation was lost between generation and the viewer even though the pipeline
+   computed it correctly. Note this is a per-OBJECT rotation, independent of the
+   room-level `yaw_deg` in point 3 above -- a chair sitting at an angle in an
+   otherwise axis-aligned (yaw_deg=0) room still has a real, useful `angle`.
 
 5. **Per-space knob defaults.** `surface_label=table`, `max_long_m=2.1` (office).
    Factory-type spaces want `surface_label=workbench`, `max_long_m≈7.0`
