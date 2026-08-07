@@ -66,6 +66,32 @@ def _meaningful_stderr(text, n=80):
     return "\n".join(out[-n:])
 
 
+# Human-readable label per real pipeline stage, in run order. Reported live via
+# runpod.serverless.progress_update() so our platform's poller (which already
+# hits GET /status/<job_id> every few seconds) can show WHICH stage is running
+# instead of one opaque "Cloud GPU ... elapsed Xs" blob for the whole job —
+# RunPod relays the update through the same status response, no separate
+# network path from this container back to our (Tailscale-only) server needed.
+STAGE_LABELS = {
+    "_00_stitch_insv":  "Stitching video",
+    "00_video_to_img":  "Extracting frames",
+    "00a_sample_views": "Sampling perspective views",
+    "00b_da3_streaming": "Estimating depth + camera poses",
+    "pipeline.runner":  "Building floor plan + point cloud",
+    "pano_clean":       "Removing capture operator",
+}
+STAGE_ORDER = list(STAGE_LABELS)
+
+
+def _report(job, stage: str) -> None:
+    """Best-effort progress ping — must never fail or slow down the job."""
+    try:
+        runpod.serverless.progress_update(
+            job, {"stage": stage, "text": STAGE_LABELS.get(stage, stage)})
+    except Exception as e:
+        print(f"[progress] update failed (non-fatal): {e}", flush=True)
+
+
 def _run(cmd, cwd, env, stage):
     """Run one stage as a subprocess; raise with captured stderr on failure.
 
@@ -263,8 +289,10 @@ def handler(job):
         P = Path(PLATFORM) / "pipeline"
         eq = data_dir / "equirect.mp4"
         frames = data_dir / "frames"; views = data_dir / "views"
+        _report(job, "_00_stitch_insv")
         _run([py, str(P / "_00_stitch_insv.py"), "--input", str(vid), "--output", str(eq)],
              PLATFORM, env, "_00_stitch_insv"); stages_status["_00_stitch_insv"] = "ok"
+        _report(job, "00_video_to_img")
         _run([py, str(P / "00_video_to_img.py"), "--video", str(eq),
               "--output_dir", str(frames), "--every_n", str(every_n)],
              PLATFORM, env, "00_video_to_img"); stages_status["00_video_to_img"] = "ok"
@@ -273,6 +301,7 @@ def handler(job):
         # look up/down. Gaussian TRAINING stays single-pitch — build_hires_dataset.py
         # (train branch) filters to pz000 via its --pz 0 default, so only the eye-level
         # crops feed splatfacto. Encoded in filenames as pz000/pz030/pz330.
+        _report(job, "00a_sample_views")
         _run([py, str(P / "00a_sample_views.py"), "--input_dir", str(frames),
               "--output_dir", str(views), "--pitches", "-30", "0", "30"],
              PLATFORM, env, "00a_sample_views")
@@ -283,10 +312,12 @@ def handler(job):
         #     so this must run first. Ensure the ~6.6GB DA3+SALAD weights are on the
         #     volume + linked in before running it.
         _ensure_da3_weights()
+        _report(job, "00b_da3_streaming")
         _run([py, str(P / "00b_da3_streaming.py"), "--space", slug],
              PLATFORM, env, "00b_da3_streaming"); stages_status["00b_da3_streaming"] = "ok"
 
         # 4) the proven entrypoint: runs 00b -> ... -> downsample_ply (through pointcloud)
+        _report(job, "pipeline.runner")
         _run([py, "-m", "pipeline.runner", "--slug", slug], PLATFORM, env, "pipeline.runner")
         stages_status["pipeline.runner"] = "ok"
 
@@ -298,6 +329,7 @@ def handler(job):
         #     TORCH_HOME we point at /app/lama_cache, so no runtime download and no volume use.
         pano_clean_dir = data_dir / "pano_clean" / "frames"
         try:
+            _report(job, "pano_clean")
             pc_env = dict(env)
             pc_env["TORCH_HOME"] = os.environ.get("LAMA_TORCH_HOME", "/app/lama_cache")
             pc_env["YOLO_CONFIG_DIR"] = "/tmp/ultralytics"
